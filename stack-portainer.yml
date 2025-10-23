@@ -9,11 +9,11 @@ services:
       - NODE_ENV=production
       - PORT=5000
 
-      # Firebird (direto, sem secret para simplicidade)
-      - FIREBIRD_HOST=db.primesoftware.com.br
-      - FIREBIRD_DB=oficialmed1250
-      - FIREBIRD_USER=OFICIALMED
-      - FIREBIRD_PASS=d94b434ab7e328590bb8
+      # Firebird (via secrets - mais seguro)
+      - FIREBIRD_HOST_FILE=/run/secrets/FIREBIRD_HOST
+      - FIREBIRD_DB_FILE=/run/secrets/FIREBIRD_DB
+      - FIREBIRD_USER_FILE=/run/secrets/FIREBIRD_USER
+      - FIREBIRD_PASS_FILE=/run/secrets/FIREBIRD_PASS
 
       # Supabase (via secrets existentes)
       - SUPABASE_URL_FILE=/run/secrets/VITE_SUPABASE_URL
@@ -23,6 +23,10 @@ services:
       - API_TOKEN=prime-sync-2025-xY9kL2mP4nQ8wR5t
 
     secrets:
+      - FIREBIRD_HOST
+      - FIREBIRD_DB
+      - FIREBIRD_USER
+      - FIREBIRD_PASS
       - VITE_SUPABASE_URL
       - VITE_SUPABASE_SERVICE_ROLE_KEY
 
@@ -77,6 +81,14 @@ networks:
     name: OficialMed
 
 secrets:
+  FIREBIRD_HOST:
+    external: true
+  FIREBIRD_DB:
+    external: true
+  FIREBIRD_USER:
+    external: true
+  FIREBIRD_PASS:
+    external: true
   VITE_SUPABASE_URL:
     external: true
   VITE_SUPABASE_SERVICE_ROLE_KEY:

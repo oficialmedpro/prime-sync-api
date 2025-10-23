@@ -30,9 +30,9 @@ def read_secret(env_var):
     return os.getenv(env_var, '')
 
 # Configurações
-FIREBIRD_HOST = os.getenv('FIREBIRD_HOST', 'db.primesoftware.com.br')
-FIREBIRD_DB = os.getenv('FIREBIRD_DB', 'oficialmed1250')
-FIREBIRD_USER = os.getenv('FIREBIRD_USER', 'OFICIALMED')
+FIREBIRD_HOST = os.getenv('FIREBIRD_HOST') or read_secret('FIREBIRD_HOST') or 'db.primesoftware.com.br'
+FIREBIRD_DB = os.getenv('FIREBIRD_DB') or read_secret('FIREBIRD_DB') or 'oficialmed1250'
+FIREBIRD_USER = os.getenv('FIREBIRD_USER') or read_secret('FIREBIRD_USER') or 'OFICIALMED'
 FIREBIRD_PASS = os.getenv('FIREBIRD_PASS') or read_secret('FIREBIRD_PASS')
 
 SUPABASE_URL = os.getenv('SUPABASE_URL') or read_secret('SUPABASE_URL')
