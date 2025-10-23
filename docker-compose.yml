@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  prime-sync-api:
+    build: .
+    container_name: prime-sync-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      # Firebird
+      - FIREBIRD_HOST=db.primesoftware.com.br
+      - FIREBIRD_DB=oficialmed1250
+      - FIREBIRD_USER=OFICIALMED
+      - FIREBIRD_PASS=Lt-@=waIh))Ql3~
+
+      # Supabase
+      - SUPABASE_URL=https://agdffspstbxeqhqtltvb.supabase.co
+      - SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFnZGZmc3BzdGJ4ZXFocXRsdHZiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MDQ1MzY2NiwiZXhwIjoyMDY2MDI5NjY2fQ.grInwGHFAH2WYvYerwfHkUsM08wXCJASg4CPMD2cTaA
+
+      # API Token de segurança
+      - API_TOKEN=prime-sync-2025
+
+      # Porta
+      - PORT=5000
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prime-sync.rule=Host(`beta.oficialmed.com.br`) || Host(`bi.oficialmed.com.br`)"
+      - "traefik.http.routers.prime-sync.entrypoints=websecure"
+      - "traefik.http.routers.prime-sync.tls=true"
+      - "traefik.http.routers.prime-sync.tls.certresolver=letsencrypt"
+      - "traefik.http.services.prime-sync.loadbalancer.server.port=5000"
+
+    networks:
+      - prime-network
+
+networks:
+  prime-network:
+    driver: bridge
