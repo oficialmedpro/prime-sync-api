@@ -66,12 +66,12 @@ services:
         - traefik.http.middlewares.force-https-sync.redirectscheme.scheme=https
 
         # (Opcional) redirecionar www -> raiz
-        - traefik.http.routers.prime-sync-www.rule=Host(`www.sincro.oficialmed.com.br`)
+        - "traefik.http.routers.prime-sync-www.rule=Host(`www.sincro.oficialmed.com.br`)"
         - traefik.http.routers.prime-sync-www.entrypoints=websecure
         - traefik.http.routers.prime-sync-www.tls.certresolver=letsencryptresolver
         - traefik.http.routers.prime-sync-www.middlewares=sync-www2root
-        - traefik.http.middlewares.sync-www2root.redirectregex.regex=^https://www\\.(.*)
-        - traefik.http.middlewares.sync-www2root.redirectregex.replacement=https://$${1}
+        - "traefik.http.middlewares.sync-www2root.redirectregex.regex=^https://www\\.(.*)"
+        - "traefik.http.middlewares.sync-www2root.redirectregex.replacement=https://$${1}"
 
 networks:
   OficialMed:
