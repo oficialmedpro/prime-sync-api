@@ -35,6 +35,12 @@ FIREBIRD_DB = os.getenv('FIREBIRD_DB') or read_secret('FIREBIRD_DB') or 'oficial
 FIREBIRD_USER = os.getenv('FIREBIRD_USER') or read_secret('FIREBIRD_USER') or 'OFICIALMED'
 FIREBIRD_PASS = os.getenv('FIREBIRD_PASS') or read_secret('FIREBIRD_PASS')
 
+# Debug - remover depois
+logger.info(f"FIREBIRD_HOST: {FIREBIRD_HOST}")
+logger.info(f"FIREBIRD_DB: {FIREBIRD_DB}")
+logger.info(f"FIREBIRD_USER: {FIREBIRD_USER}")
+logger.info(f"FIREBIRD_PASS: {'***' if FIREBIRD_PASS else 'VAZIO'}")
+
 SUPABASE_URL = os.getenv('SUPABASE_URL') or read_secret('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY') or read_secret('SUPABASE_KEY')
 API_TOKEN = os.getenv('API_TOKEN') or read_secret('API_TOKEN')
