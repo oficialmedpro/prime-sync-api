@@ -33,11 +33,11 @@ def read_secret(env_var):
 FIREBIRD_HOST = os.getenv('FIREBIRD_HOST', 'db.primesoftware.com.br')
 FIREBIRD_DB = os.getenv('FIREBIRD_DB', 'oficialmed1250')
 FIREBIRD_USER = os.getenv('FIREBIRD_USER', 'OFICIALMED')
-FIREBIRD_PASS = read_secret('FIREBIRD_PASS')
+FIREBIRD_PASS = os.getenv('FIREBIRD_PASS') or read_secret('FIREBIRD_PASS')
 
-SUPABASE_URL = read_secret('SUPABASE_URL')
-SUPABASE_KEY = read_secret('SUPABASE_KEY')
-API_TOKEN = read_secret('API_TOKEN')
+SUPABASE_URL = os.getenv('SUPABASE_URL') or read_secret('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY') or read_secret('SUPABASE_KEY')
+API_TOKEN = os.getenv('API_TOKEN') or read_secret('API_TOKEN')
 
 headers = {
     'apikey': SUPABASE_KEY,
