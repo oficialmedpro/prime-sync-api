@@ -15,9 +15,9 @@ services:
       - FIREBIRD_USER_FILE=/run/secrets/FIREBIRD_USER
       - FIREBIRD_PASS_FILE=/run/secrets/FIREBIRD_PASS
 
-      # Supabase (via secrets existentes)
-      - SUPABASE_URL_FILE=/run/secrets/VITE_SUPABASE_URL
-      - SUPABASE_KEY_FILE=/run/secrets/VITE_SUPABASE_SERVICE_ROLE_KEY
+      # Supabase (via secrets específicos)
+      - SUPABASE_URL_FILE=/run/secrets/SUPABASE_URL_SYNC
+      - SUPABASE_KEY_FILE=/run/secrets/SUPABASE_KEY_SYNC
 
       # API Token (direto, sem secret)
       - API_TOKEN=prime-sync-2025-xY9kL2mP4nQ8wR5t
@@ -27,8 +27,8 @@ services:
       - FIREBIRD_DB
       - FIREBIRD_USER
       - FIREBIRD_PASS
-      - VITE_SUPABASE_URL
-      - VITE_SUPABASE_SERVICE_ROLE_KEY
+      - SUPABASE_URL_SYNC
+      - SUPABASE_KEY_SYNC
 
     deploy:
       mode: replicated
@@ -89,7 +89,7 @@ secrets:
     external: true
   FIREBIRD_PASS:
     external: true
-  VITE_SUPABASE_URL:
+  SUPABASE_URL_SYNC:
     external: true
-  VITE_SUPABASE_SERVICE_ROLE_KEY:
+  SUPABASE_KEY_SYNC:
     external: true
