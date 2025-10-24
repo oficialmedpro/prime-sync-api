@@ -525,8 +525,8 @@ def sync_rastreabilidade_nova():
         logger.info("📋 Sincronizando rastreabilidade...")
 
         headers = {
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
             'Content-Type': 'application/json'
         }
 
@@ -641,8 +641,8 @@ def sync_tipos_processo_novos():
         logger.info("📋 Sincronizando tipos de processo...")
 
         headers = {
-            'apikey': SUPABASE_SERVICE_KEY,
-            'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
             'Content-Type': 'application/json'
         }
 
