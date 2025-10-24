@@ -434,14 +434,14 @@ def sync_formulas_itens_novos():
                 A3.NUMEROFORMULA,
                 A3.NUMEROLINHA,
                 A3.CODIGO_PRODUTO,
-                P.NOME_PRODUTO,
+                EG.NOMEPRODUTO,
                 A3.QUANTIDADE,
                 A3.UNIDADE,
                 A3.VALORCUSTO,
                 A3.VALORVENDA,
                 A3.OBSERVACAO
             FROM ATENDIMENTO_A3 A3
-            LEFT JOIN PRODUTO P ON A3.CODIGO_PRODUTO = P.CODIGO
+            LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
             WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A3.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
