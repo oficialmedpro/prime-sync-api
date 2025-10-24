@@ -117,7 +117,6 @@ def sync_clientes_novos():
                 C.EMAIL1,
                 C.TELEFONE1,
                 C.TELEFONE2,
-                C.CELULAR,
                 C.ENDERECO,
                 C.NUMERO,
                 C.COMPLEMENTO,
@@ -149,9 +148,9 @@ def sync_clientes_novos():
         clientes_dados = []
         for row in novos_clientes:
             data_nasc = None
-            if row[14] and row[15] and row[16]:
+            if row[13] and row[14] and row[15]:
                 try:
-                    data_nasc = f"{int(row[16])}-{int(row[15]):02d}-{int(row[14]):02d}"
+                    data_nasc = f"{int(row[15])}-{int(row[14]):02d}-{int(row[13]):02d}"
                 except:
                     pass
 
@@ -160,17 +159,17 @@ def sync_clientes_novos():
                 'nome': limpar_string(row[1])[:255] if row[1] else None,
                 'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
                 'email': limpar_string(row[3])[:255] if row[3] else None,
-                'telefone': limpar_string(row[4] or row[5] or row[6]),
-                'endereco_logradouro': limpar_string(row[7])[:255] if row[7] else None,
-                'endereco_numero': str(row[8]) if row[8] else None,
-                'endereco_complemento': limpar_string(row[9])[:100] if row[9] else None,
-                'endereco_bairro': limpar_string(row[10])[:100] if row[10] else None,
-                'endereco_cidade': limpar_string(row[11])[:100] if row[11] else None,
-                'endereco_estado': limpar_string(row[12])[:2] if row[12] else None,
-                'endereco_cep': limpar_string(row[13])[:10] if row[13] else None,
+                'telefone': limpar_string(row[4] or row[5]),
+                'endereco_logradouro': limpar_string(row[6])[:255] if row[6] else None,
+                'endereco_numero': str(row[7]) if row[7] else None,
+                'endereco_complemento': limpar_string(row[8])[:100] if row[8] else None,
+                'endereco_bairro': limpar_string(row[9])[:100] if row[9] else None,
+                'endereco_cidade': limpar_string(row[10])[:100] if row[10] else None,
+                'endereco_estado': limpar_string(row[11])[:2] if row[11] else None,
+                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
                 'data_nascimento': data_nasc,
-                'sexo': str(row[17])[:1] if row[17] else None,
-                'data_cadastro': row[18].isoformat() if row[18] else None,
+                'sexo': str(row[16])[:1] if row[16] else None,
+                'data_cadastro': row[17].isoformat() if row[17] else None,
                 'ativo': True,
                 'updated_at': datetime.now().isoformat()
             }
@@ -788,11 +787,11 @@ def sync():
         result_itens = sync_formulas_itens_novos()
         logger.info(f"📋 Itens: {result_itens}")
 
-        result_rastreabilidade = sync_rastreabilidade_nova()
-        logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+        # result_rastreabilidade = sync_rastreabilidade_nova()
+        # logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
 
-        result_tipos = sync_tipos_processo_novos()
-        logger.info(f"📋 Tipos Processo: {result_tipos}")
+        # result_tipos = sync_tipos_processo_novos()
+        # logger.info(f"📋 Tipos Processo: {result_tipos}")
 
         tempo_total = (datetime.now() - inicio).total_seconds()
 
@@ -805,15 +804,13 @@ def sync():
             'pedidos': result_pedidos,
             'formulas': result_formulas,
             'formulas_itens': result_itens,
-            'rastreabilidade': result_rastreabilidade,
-            'tipos_processo': result_tipos,
+            # 'rastreabilidade': result_rastreabilidade,
+            # 'tipos_processo': result_tipos,
             'total_inseridos': (
                 result_clientes.get('inseridos', 0) +
                 result_pedidos.get('inseridos', 0) +
                 result_formulas.get('inseridos', 0) +
-                result_itens.get('inseridos', 0) +
-                result_rastreabilidade.get('inseridos', 0) +
-                result_tipos.get('inseridos', 0)
+                result_itens.get('inseridos', 0)
             )
         }
 
