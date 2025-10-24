@@ -433,12 +433,15 @@ def sync_formulas_itens_novos():
                 A3.CODIGO_ATEND_A1,
                 A3.NUMEROFORMULA,
                 A3.NUMEROLINHA,
+                A3.CODIGO_PRODUTO,
+                P.NOME_PRODUTO,
                 A3.QUANTIDADE,
                 A3.UNIDADE,
                 A3.VALORCUSTO,
                 A3.VALORVENDA,
                 A3.OBSERVACAO
             FROM ATENDIMENTO_A3 A3
+            LEFT JOIN PRODUTO P ON A3.CODIGO_PRODUTO = P.CODIGO
             WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A3.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
@@ -479,8 +482,8 @@ def sync_formulas_itens_novos():
 
         itens_dados = []
         for row in novos_itens:
-            (codigo_atend, num_formula, num_linha, quantidade, unidade,
-             valor_custo, valor_venda, observacao) = row
+            (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
+             quantidade, unidade, valor_custo, valor_venda, observacao) = row
 
             chave = (codigo_atend, num_formula)
             formula_info = cache_formulas.get(chave)
@@ -494,8 +497,8 @@ def sync_formulas_itens_novos():
                 'codigo_atendimento_original': codigo_atend,
                 'numero_formula': num_formula,
                 'numero_linha': num_linha,
-                'codigo_produto': 9999998,  # Código padrão quando não há produto específico
-                'nome_produto': 'ITEM DE FÓRMULA',  # Nome padrão
+                'codigo_produto': codigo_produto,
+                'nome_produto': limpar_string(nome_produto) or 'PRODUTO NÃO IDENTIFICADO',
                 'quantidade': float(quantidade) if quantidade else None,
                 'unidade': limpar_string(unidade),
                 'quantidade_calculo': float(quantidade) if quantidade else None,
