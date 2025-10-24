@@ -119,7 +119,6 @@ def sync_clientes_novos():
                 C.TELEFONE2,
                 C.ENDERECO,
                 C.NUMERO,
-                C.COMPLEMENTO,
                 C.BAIRRO,
                 C.CIDADE,
                 C.UF,
@@ -148,9 +147,9 @@ def sync_clientes_novos():
         clientes_dados = []
         for row in novos_clientes:
             data_nasc = None
-            if row[13] and row[14] and row[15]:
+            if row[12] and row[13] and row[14]:
                 try:
-                    data_nasc = f"{int(row[15])}-{int(row[14]):02d}-{int(row[13]):02d}"
+                    data_nasc = f"{int(row[14])}-{int(row[13]):02d}-{int(row[12]):02d}"
                 except:
                     pass
 
@@ -162,14 +161,13 @@ def sync_clientes_novos():
                 'telefone': limpar_string(row[4] or row[5]),
                 'endereco_logradouro': limpar_string(row[6])[:255] if row[6] else None,
                 'endereco_numero': str(row[7]) if row[7] else None,
-                'endereco_complemento': limpar_string(row[8])[:100] if row[8] else None,
-                'endereco_bairro': limpar_string(row[9])[:100] if row[9] else None,
-                'endereco_cidade': limpar_string(row[10])[:100] if row[10] else None,
-                'endereco_estado': limpar_string(row[11])[:2] if row[11] else None,
-                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
+                'endereco_bairro': limpar_string(row[8])[:100] if row[8] else None,
+                'endereco_cidade': limpar_string(row[9])[:100] if row[9] else None,
+                'endereco_estado': limpar_string(row[10])[:2] if row[10] else None,
+                'endereco_cep': limpar_string(row[11])[:10] if row[11] else None,
                 'data_nascimento': data_nasc,
-                'sexo': str(row[16])[:1] if row[16] else None,
-                'data_cadastro': row[17].isoformat() if row[17] else None,
+                'sexo': str(row[15])[:1] if row[15] else None,
+                'data_cadastro': row[16].isoformat() if row[16] else None,
                 'ativo': True,
                 'updated_at': datetime.now().isoformat()
             }
