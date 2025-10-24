@@ -433,23 +433,16 @@ def sync_formulas_itens_novos():
                 A3.CODIGO_ATEND_A1,
                 A3.NUMEROFORMULA,
                 A3.NUMEROLINHA,
-                A3.CODIGO_PRODUTO,
-                A3.NOME_PRODUTO,
                 A3.QUANTIDADE,
                 A3.UNIDADE,
-                A3.QUANTIDADE_CALCULO,
                 A3.VALORCUSTO,
                 A3.VALORVENDA,
-                A3.VALORVENDA_DESC,
-                A3.INCLUSAOSISTEMA,
-                A3.VISUALIZARPRODUTO,
                 A3.OBSERVACAO
             FROM ATENDIMENTO_A3 A3
             WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A3.CODIGO_ATEND_A1 IS NOT NULL
-            AND A3.NOME_PRODUTO IS NOT NULL
             ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
-            ROWS 5000
+            ROWS 1000
         """)
 
         novos_itens = cursor.fetchall()
@@ -486,9 +479,8 @@ def sync_formulas_itens_novos():
 
         itens_dados = []
         for row in novos_itens:
-            (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
-             quantidade, unidade, qtd_calculo, valor_custo, valor_venda,
-             valor_venda_desc, inclusao_sistema, visualizar_produto, observacao) = row
+            (codigo_atend, num_formula, num_linha, quantidade, unidade,
+             valor_custo, valor_venda, observacao) = row
 
             chave = (codigo_atend, num_formula)
             formula_info = cache_formulas.get(chave)
@@ -502,17 +494,18 @@ def sync_formulas_itens_novos():
                 'codigo_atendimento_original': codigo_atend,
                 'numero_formula': num_formula,
                 'numero_linha': num_linha,
-                'codigo_produto': codigo_produto,
-                'nome_produto': limpar_string(nome_produto),
+                'codigo_produto': 9999998,  # Código padrão quando não há produto específico
+                'nome_produto': 'ITEM DE FÓRMULA',  # Nome padrão
                 'quantidade': float(quantidade) if quantidade else None,
                 'unidade': limpar_string(unidade),
-                'quantidade_calculo': float(qtd_calculo) if qtd_calculo else None,
+                'quantidade_calculo': float(quantidade) if quantidade else None,
                 'valor_custo': float(valor_custo) if valor_custo else 0.0,
                 'valor_venda': float(valor_venda) if valor_venda else 0.0,
-                'valor_venda_desconto': float(valor_venda_desc) if valor_venda_desc else 0.0,
-                'inclusao_sistema': bool(inclusao_sistema) if inclusao_sistema is not None else False,
-                'visualizar_produto': bool(visualizar_produto) if visualizar_produto is not None else True,
-                'observacao': limpar_string(observacao)
+                'valor_venda_desconto': 0.0,
+                'inclusao_sistema': True,
+                'visualizar_produto': True,
+                'observacao': limpar_string(observacao),
+                'updated_at': datetime.now().isoformat()
             }
             itens_dados.append(item)
 
@@ -570,16 +563,19 @@ def sync_rastreabilidade_nova():
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT
-                A2.CODIGO_ATEND_A1,
-                A2.NUMEROFORMULA,
-                A2.CONTROLERASTREABILIDADE
-            FROM ATENDIMENTO_A2 A2
-            WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
-            AND A2.CODIGO_ATEND_A1 IS NOT NULL
-            AND A2.CONTROLERASTREABILIDADE IS NOT NULL
-            ORDER BY A2.CODIGO_ATEND_A1
-            ROWS 5000
+            SELECT 
+                PM.CODIGO,
+                PM.TIPO_MOV,
+                PM.CODIGO_MOV,
+                PM.CODIGO_PROCESSO_TIPO,
+                PM.CODIGO_FUNCIONARIO,
+                PM.DATA_PROCESSO,
+                PM.HORA_PROCESSO,
+                PM.SEQUENCIA
+            FROM PROCESSO_MANIPULACAO PM
+            WHERE PM.CODIGO > {ultimo_codigo}
+            ORDER BY PM.CODIGO
+            ROWS 1000
         """)
 
         novos_registros = cursor.fetchall()
@@ -590,50 +586,25 @@ def sync_rastreabilidade_nova():
 
         logger.info(f"✅ Encontrados {len(novos_registros)} registros novos")
 
-        # Buscar fórmulas correspondentes
-        chaves_formula = list(set([(row[0], row[1]) for row in novos_registros]))
-        cache_formulas = {}
-
-        for codigo_atend, num_formula in chaves_formula[:100]:
-            url_formula = f"{SUPABASE_URL}/rest/v1/prime_formulas"
-            response = requests.get(
-                url_formula,
-                headers=headers,
-                params={
-                    'select': 'id,pedido_id',
-                    'codigo_orcamento_original': f'eq.{codigo_atend}',
-                    'numero_formula': f'eq.{num_formula}',
-                    'limit': 1
-                },
-                timeout=5
-            )
-
-            if response.status_code == 200:
-                dados = response.json()
-                if dados:
-                    cache_formulas[(codigo_atend, num_formula)] = dados[0]
-
+        # Preparar dados
         rastreabilidade_dados = []
         for row in novos_registros:
-            codigo_atend, num_formula, controle_rastreabilidade = row
-
-            chave = (codigo_atend, num_formula)
-            formula_info = cache_formulas.get(chave)
-
-            if not formula_info:
-                continue
-
-            registro = {
-                'formula_id': formula_info['id'],
-                'pedido_id': formula_info['pedido_id'],
-                'codigo_atendimento_original': codigo_atend,
-                'numero_formula': num_formula,
-                'controle_rastreabilidade': limpar_string(controle_rastreabilidade)
+            rastro = {
+                'codigo_processo_original': row[0],
+                'codigo_orcamento_original': row[2],
+                'codigo_tipo_original': row[3],
+                'tipo_movimento': row[1],
+                'codigo_funcionario': row[4],
+                'data_processo': row[5].isoformat() if row[5] else None,
+                'hora_processo': str(row[6]) if row[6] else None,
+                'sequencia': row[7],
+                'status_processo': 'CONCLUIDO',
+                'updated_at': datetime.now().isoformat()
             }
-            rastreabilidade_dados.append(registro)
+            rastreabilidade_dados.append(rastro)
 
         if not rastreabilidade_dados:
-            return {'inseridos': 0, 'mensagem': 'Registros sem fórmulas correspondentes'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido'}
 
         url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
         response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
@@ -686,15 +657,24 @@ def sync_tipos_processo_novos():
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT
-                A1.CODIGO,
-                A1.TIPODEPROCESSO
-            FROM ATENDIMENTO_A1 A1
-            WHERE A1.CODIGO > {ultimo_codigo}
-            AND A1.CODIGO IS NOT NULL
-            AND A1.TIPODEPROCESSO IS NOT NULL
-            ORDER BY A1.CODIGO
-            ROWS 5000
+            SELECT 
+                FPT.CODIGO,
+                FPT.NOMETIPO,
+                FPT.NOMEFICHA,
+                FPT.TIPO,
+                FPT.SEQUENCIA,
+                FPT.ATIVO,
+                FPT.PROCESSOOPCIONAL,
+                FPT.PAGARCOMISSAO,
+                FPT.REGISTRARBAIXA,
+                FPT.BLOQUEARCALCULO,
+                FPT.LIBERARENTREGA,
+                FPT.BLOQUEARRECEITA,
+                FPT.OBSERVACAO
+            FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
+            WHERE FPT.CODIGO > {ultimo_codigo}
+            ORDER BY FPT.CODIGO
+            ROWS 1000
         """)
 
         novos_tipos = cursor.fetchall()
@@ -705,45 +685,29 @@ def sync_tipos_processo_novos():
 
         logger.info(f"✅ Encontrados {len(novos_tipos)} tipos novos")
 
-        # Buscar pedidos correspondentes
-        codigos_atendimento = [row[0] for row in novos_tipos]
-        cache_pedidos = {}
-
-        for codigo_atend in codigos_atendimento[:100]:
-            url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-            response = requests.get(
-                url_pedido,
-                headers=headers,
-                params={
-                    'select': 'id',
-                    'codigo_orcamento_original': f'eq.{codigo_atend}',
-                    'limit': 1
-                },
-                timeout=5
-            )
-
-            if response.status_code == 200:
-                dados = response.json()
-                if dados:
-                    cache_pedidos[codigo_atend] = dados[0]['id']
-
+        # Preparar dados
         tipos_dados = []
         for row in novos_tipos:
-            codigo_atend, tipo_processo = row
-
-            pedido_id = cache_pedidos.get(codigo_atend)
-            if not pedido_id:
-                continue
-
             tipo = {
-                'pedido_id': pedido_id,
-                'codigo_atendimento_original': codigo_atend,
-                'tipo_processo': limpar_string(tipo_processo)
+                'codigo_tipo_original': row[0],
+                'nome_processo': limpar_string(row[1])[:100] if row[1] else None,
+                'nome_ficha': limpar_string(row[2])[:100] if row[2] else None,
+                'tipo_producao': row[3],
+                'sequencia': row[4],
+                'ativo': bool(row[5]) if row[5] is not None else True,
+                'processo_opcional': bool(row[6]) if row[6] is not None else False,
+                'pagar_comissao': bool(row[7]) if row[7] is not None else False,
+                'registrar_baixa': bool(row[8]) if row[8] is not None else False,
+                'bloquear_calculo': bool(row[9]) if row[9] is not None else False,
+                'liberar_entrega': bool(row[10]) if row[10] is not None else False,
+                'bloquear_receita': bool(row[11]) if row[11] is not None else False,
+                'observacao': limpar_string(row[12]) if row[12] else None,
+                'updated_at': datetime.now().isoformat()
             }
             tipos_dados.append(tipo)
 
         if not tipos_dados:
-            return {'inseridos': 0, 'mensagem': 'Tipos sem pedidos correspondentes'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum tipo válido'}
 
         url = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
         response = requests.post(url, headers=headers, json=tipos_dados, timeout=60)
@@ -792,11 +756,11 @@ def sync():
         result_itens = sync_formulas_itens_novos()
         logger.info(f"📋 Itens: {result_itens}")
 
-        # result_rastreabilidade = sync_rastreabilidade_nova()
-        # logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+        result_rastreabilidade = sync_rastreabilidade_nova()
+        logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
 
-        # result_tipos = sync_tipos_processo_novos()
-        # logger.info(f"📋 Tipos Processo: {result_tipos}")
+        result_tipos = sync_tipos_processo_novos()
+        logger.info(f"📋 Tipos Processo: {result_tipos}")
 
         tempo_total = (datetime.now() - inicio).total_seconds()
 
@@ -809,13 +773,15 @@ def sync():
             'pedidos': result_pedidos,
             'formulas': result_formulas,
             'formulas_itens': result_itens,
-            # 'rastreabilidade': result_rastreabilidade,
-            # 'tipos_processo': result_tipos,
+            'rastreabilidade': result_rastreabilidade,
+            'tipos_processo': result_tipos,
             'total_inseridos': (
                 result_clientes.get('inseridos', 0) +
                 result_pedidos.get('inseridos', 0) +
                 result_formulas.get('inseridos', 0) +
-                result_itens.get('inseridos', 0)
+                result_itens.get('inseridos', 0) +
+                result_rastreabilidade.get('inseridos', 0) +
+                result_tipos.get('inseridos', 0)
             )
         }
 
