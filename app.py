@@ -26,9 +26,21 @@ def read_secret(env_var):
     """Lê secret de arquivo ou variável de ambiente"""
     file_path_var = f"{env_var}_FILE"
     if file_path_var in os.environ:
-        with open(os.environ[file_path_var], 'r') as f:
-            return f.read().strip()
-    return os.getenv(env_var, '')
+        try:
+            with open(os.environ[file_path_var], 'r') as f:
+                value = f.read().strip()
+                logger.info(f"✅ Secret {env_var} lida do arquivo: {os.environ[file_path_var]}")
+                return value
+        except Exception as e:
+            logger.error(f"❌ Erro ao ler secret {env_var}: {e}")
+
+    # Tentar ler direto da env var
+    value = os.getenv(env_var, '')
+    if value:
+        logger.info(f"✅ Secret {env_var} lida da variável de ambiente")
+    else:
+        logger.warning(f"⚠️  Secret {env_var} não encontrada!")
+    return value
 
 # Configurações
 FIREBIRD_HOST = os.getenv('FIREBIRD_HOST') or read_secret('FIREBIRD_HOST') or 'db.primesoftware.com.br'
