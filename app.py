@@ -134,7 +134,7 @@ def sync_clientes_novos():
             WHERE C.ATIVO = -1
             AND C.CODIGO > {ultimo_codigo}
             ORDER BY C.CODIGO
-            FETCH FIRST 1000 ROWS ONLY
+            ROWS 1000
         """)
 
         novos_clientes = cursor.fetchall()
@@ -213,7 +213,7 @@ def sync_pedidos_novos():
             WHERE A.CODIGO_CLIENTE IS NOT NULL
             AND A.CODIGO > {ultimo_codigo}
             ORDER BY A.CODIGO
-            FETCH FIRST 1000 ROWS ONLY
+            ROWS 1000
         """)
 
         novos_pedidos = cursor.fetchall()
@@ -331,7 +331,7 @@ def sync_formulas_novas():
             WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A2.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
-            FETCH FIRST 2000 ROWS ONLY
+            ROWS 2000
         """)
 
         novas_formulas = cursor.fetchall()
@@ -445,7 +445,7 @@ def sync_formulas_itens_novos():
             AND A3.CODIGO_ATEND_A1 IS NOT NULL
             AND A3.NOME_PRODUTO IS NOT NULL
             ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
-            FETCH FIRST 5000 ROWS ONLY
+            ROWS 5000
         """)
 
         novos_itens = cursor.fetchall()
@@ -575,7 +575,7 @@ def sync_rastreabilidade_nova():
             AND A2.CODIGO_ATEND_A1 IS NOT NULL
             AND A2.CONTROLERASTREABILIDADE IS NOT NULL
             ORDER BY A2.CODIGO_ATEND_A1
-            FETCH FIRST 5000 ROWS ONLY
+            ROWS 5000
         """)
 
         novos_registros = cursor.fetchall()
@@ -690,7 +690,7 @@ def sync_tipos_processo_novos():
             AND A1.CODIGO IS NOT NULL
             AND A1.TIPODEPROCESSO IS NOT NULL
             ORDER BY A1.CODIGO
-            FETCH FIRST 5000 ROWS ONLY
+            ROWS 5000
         """)
 
         novos_tipos = cursor.fetchall()
