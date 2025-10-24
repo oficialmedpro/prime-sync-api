@@ -110,25 +110,25 @@ def sync_clientes_novos():
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT
+            SELECT 
                 C.CODIGO,
                 C.NOMECLIENTE,
                 C.CPF_CNPJ,
-                C.EMAIL1,
-                C.TELEFONE1,
-                C.TELEFONE2,
-                C.ENDERECO,
-                C.NUMERO,
-                C.BAIRRO,
-                C.CIDADE,
-                C.UF,
-                C.CEP,
                 C.DIANASCIMENTO,
                 C.MESNASCIMENTO,
                 C.ANONASCIMENTO,
                 C.SEXO,
-                C.DATACADASTRO
+                C.EMAIL1,
+                C.TELEFONEPREFIXO,
+                C.TELEFONE1,
+                C.ENDERECO,
+                C.NUMERO,
+                C.CEP,
+                CE.NOMECIDADE,
+                CE.UF,
+                C.ATIVO
             FROM CLIENTE C
+            LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
             WHERE C.ATIVO = -1
             AND C.CODIGO > {ultimo_codigo}
             ORDER BY C.CODIGO
@@ -146,29 +146,36 @@ def sync_clientes_novos():
         # Preparar dados
         clientes_dados = []
         for row in novos_clientes:
+            # Formatar data de nascimento
             data_nasc = None
-            if row[12] and row[13] and row[14]:
+            if row[3] and row[4] and row[5]:  # DIANASCIMENTO, MESNASCIMENTO, ANONASCIMENTO
                 try:
-                    data_nasc = f"{int(row[14])}-{int(row[13]):02d}-{int(row[12]):02d}"
+                    data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
                 except:
                     pass
+
+            # Formatar telefone (prefixo + número)
+            telefone = None
+            if row[8] or row[9]:  # TELEFONEPREFIXO ou TELEFONE1
+                prefixo = str(row[8]).strip() if row[8] else ""
+                numero = str(row[9]).strip() if row[9] else ""
+                telefone = (prefixo + numero).strip() or None
 
             cliente = {
                 'codigo_cliente_original': row[0],
                 'nome': limpar_string(row[1])[:255] if row[1] else None,
                 'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'email': limpar_string(row[3])[:255] if row[3] else None,
-                'telefone': limpar_string(row[4] or row[5]),
-                'endereco_logradouro': limpar_string(row[6])[:255] if row[6] else None,
-                'endereco_numero': str(row[7]) if row[7] else None,
-                'endereco_bairro': limpar_string(row[8])[:100] if row[8] else None,
-                'endereco_cidade': limpar_string(row[9])[:100] if row[9] else None,
-                'endereco_estado': limpar_string(row[10])[:2] if row[10] else None,
-                'endereco_cep': limpar_string(row[11])[:10] if row[11] else None,
+                'email': limpar_string(row[7])[:255] if row[7] else None,
+                'telefone': telefone,
+                'endereco_logradouro': limpar_string(row[10])[:255] if row[10] else None,
+                'endereco_numero': str(row[11]) if row[11] else None,
+                'endereco_cidade': limpar_string(row[13])[:100] if row[13] else None,
+                'endereco_estado': limpar_string(row[14])[:2] if row[14] else None,
+                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
                 'data_nascimento': data_nasc,
-                'sexo': str(row[15])[:1] if row[15] else None,
-                'data_cadastro': row[16].isoformat() if row[16] else None,
-                'ativo': True,
+                'sexo': str(row[6])[:1] if row[6] else None,
+                'data_cadastro': None,  # Não temos DATACADASTRO na consulta
+                'ativo': bool(row[15]) if row[15] is not None else True,
                 'updated_at': datetime.now().isoformat()
             }
             clientes_dados.append(cliente)
