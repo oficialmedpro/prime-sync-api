@@ -548,8 +548,8 @@ def sync_rastreabilidade_nova():
             url_ultimo,
             headers=headers,
             params={
-                'select': 'codigo_atendimento_original',
-                'order': 'codigo_atendimento_original.desc',
+                'select': 'codigo_processo_original',
+                'order': 'codigo_processo_original.desc',
                 'limit': 1
             },
             timeout=10
@@ -559,14 +559,14 @@ def sync_rastreabilidade_nova():
         if response.status_code == 200:
             dados = response.json()
             if dados:
-                ultimo_codigo = dados[0]['codigo_atendimento_original']
+                ultimo_codigo = dados[0]['codigo_processo_original']
 
         logger.info(f"📊 Rastreabilidade - Último código: {ultimo_codigo}")
 
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT 
+            SELECT
                 PM.CODIGO,
                 PM.TIPO_MOV,
                 PM.CODIGO_MOV,
@@ -589,13 +589,48 @@ def sync_rastreabilidade_nova():
 
         logger.info(f"✅ Encontrados {len(novos_registros)} registros novos")
 
-        # Preparar dados
+        # Preparar dados com lookup de IDs
         rastreabilidade_dados = []
         for row in novos_registros:
+            codigo_orcamento = row[2]
+            codigo_tipo = row[3]
+
+            # Buscar pedido_id no Supabase
+            url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+            resp_pedido = requests.get(
+                url_pedido,
+                headers=headers,
+                params={'select': 'id', 'codigo_orcamento_original': f'eq.{codigo_orcamento}', 'limit': 1},
+                timeout=10
+            )
+
+            if resp_pedido.status_code != 200 or not resp_pedido.json():
+                logger.warning(f"⚠️ Pedido {codigo_orcamento} não encontrado no Supabase, pulando...")
+                continue
+
+            pedido_id = resp_pedido.json()[0]['id']
+
+            # Buscar tipo_processo_id no Supabase
+            url_tipo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+            resp_tipo = requests.get(
+                url_tipo,
+                headers=headers,
+                params={'select': 'id', 'codigo_tipo_original': f'eq.{codigo_tipo}', 'limit': 1},
+                timeout=10
+            )
+
+            if resp_tipo.status_code != 200 or not resp_tipo.json():
+                logger.warning(f"⚠️ Tipo de processo {codigo_tipo} não encontrado no Supabase, pulando...")
+                continue
+
+            tipo_processo_id = resp_tipo.json()[0]['id']
+
             rastro = {
                 'codigo_processo_original': row[0],
-                'codigo_orcamento_original': row[2],
-                'codigo_tipo_original': row[3],
+                'pedido_id': pedido_id,
+                'codigo_orcamento_original': codigo_orcamento,
+                'tipo_processo_id': tipo_processo_id,
+                'codigo_tipo_original': codigo_tipo,
                 'tipo_movimento': row[1],
                 'codigo_funcionario': row[4],
                 'data_processo': row[5].isoformat() if row[5] else None,
@@ -618,7 +653,7 @@ def sync_rastreabilidade_nova():
                 'mensagem': f'{len(rastreabilidade_dados)} registros sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir rastreabilidade: {response.status_code}")
+            logger.error(f"❌ Erro ao inserir rastreabilidade: {response.status_code} - {response.text}")
             return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
 
     except Exception as e:
@@ -660,19 +695,19 @@ def sync_tipos_processo_novos():
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT 
+            SELECT
                 FPT.CODIGO,
                 FPT.NOMETIPO,
                 FPT.NOMEFICHA,
-                FPT.TIPO,
+                FPT.TIPO_PRODUCAO,
                 FPT.SEQUENCIA,
                 FPT.ATIVO,
-                FPT.PROCESSOOPCIONAL,
+                FPT.PROCESSO_OPCIONAL,
                 FPT.PAGARCOMISSAO,
-                FPT.REGISTRARBAIXA,
-                FPT.BLOQUEARCALCULO,
-                FPT.LIBERARENTREGA,
-                FPT.BLOQUEARRECEITA,
+                FPT.REGISTRAR_BAIXA,
+                FPT.BLOQUEAR_CALCULO,
+                FPT.LIBERAR_ENTREGA,
+                FPT.BLOQUEAR_RECEITA,
                 FPT.OBSERVACAO
             FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
             WHERE FPT.CODIGO > {ultimo_codigo}
