@@ -1,0 +1,95 @@
+version: "3.7"
+
+services:
+  prime-sync-api:
+    image: oficialmedpro/prime-sync-api:latest
+    networks:
+      - OficialMed
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+
+      # Firebird (via secrets com NOMES NOVOS)
+      - FIREBIRD_HOST_FILE=/run/secrets/PRIME_FIREBIRD_HOST
+      - FIREBIRD_DB_FILE=/run/secrets/PRIME_FIREBIRD_DB
+      - FIREBIRD_USER_FILE=/run/secrets/PRIME_FIREBIRD_USER
+      - FIREBIRD_PASS_FILE=/run/secrets/PRIME_FIREBIRD_PASS
+
+      # Supabase (via secrets com NOMES NOVOS)
+      - SUPABASE_URL_FILE=/run/secrets/PRIME_SUPABASE_URL
+      - SUPABASE_KEY_FILE=/run/secrets/PRIME_SUPABASE_KEY
+
+      # API Token (direto, sem secret)
+      - API_TOKEN=prime-sync-2025-xY9kL2mP4nQ8wR5t
+
+    secrets:
+      - PRIME_FIREBIRD_HOST
+      - PRIME_FIREBIRD_DB
+      - PRIME_FIREBIRD_USER
+      - PRIME_FIREBIRD_PASS
+      - PRIME_SUPABASE_URL
+      - PRIME_SUPABASE_KEY
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      labels:
+        - traefik.enable=true
+
+        # Router principal (HTTPS)
+        - traefik.http.routers.prime-sync.rule=Host(`sincro.oficialmed.com.br`)
+        - traefik.http.routers.prime-sync.entrypoints=websecure
+        - traefik.http.routers.prime-sync.tls.certresolver=letsencryptresolver
+
+        # Serviço apontando para a porta 5000 do container
+        - traefik.http.services.prime-sync.loadbalancer.server.port=5000
+        - traefik.http.services.prime-sync.loadbalancer.passHostHeader=true
+        - traefik.http.routers.prime-sync.service=prime-sync
+
+        # Redirecionar HTTP -> HTTPS
+        - traefik.http.routers.prime-sync-http.rule=Host(`sincro.oficialmed.com.br`)
+        - traefik.http.routers.prime-sync-http.entrypoints=web
+        - traefik.http.routers.prime-sync-http.middlewares=force-https-sync
+        - traefik.http.middlewares.force-https-sync.redirectscheme.scheme=https
+
+        # (Opcional) redirecionar www -> raiz
+        - "traefik.http.routers.prime-sync-www.rule=Host(`www.sincro.oficialmed.com.br`)"
+        - traefik.http.routers.prime-sync-www.entrypoints=websecure
+        - traefik.http.routers.prime-sync-www.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.prime-sync-www.middlewares=sync-www2root
+        - "traefik.http.middlewares.sync-www2root.redirectregex.regex=^https://www\\.(.*)"
+        - "traefik.http.middlewares.sync-www2root.redirectregex.replacement=https://$${1}"
+
+networks:
+  OficialMed:
+    external: true
+    name: OficialMed
+
+secrets:
+  PRIME_FIREBIRD_HOST:
+    external: true
+  PRIME_FIREBIRD_DB:
+    external: true
+  PRIME_FIREBIRD_USER:
+    external: true
+  PRIME_FIREBIRD_PASS:
+    external: true
+  PRIME_SUPABASE_URL:
+    external: true
+  PRIME_SUPABASE_KEY:
+    external: true
