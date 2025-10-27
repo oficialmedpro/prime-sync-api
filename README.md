@@ -2,6 +2,42 @@
 
 Sistema automatizado de sincronização incremental entre Firebird (Prime) e Supabase PostgreSQL.
 
+---
+
+## 🆘 Problemas de Sincronização?
+
+### ✅ **CORREÇÃO APLICADA - 27/10/2025**
+
+**Problema resolvido:** Cliente 9999999 ("VENDA AO CONSUMIDOR") é **legítimo** no Firebird.  
+**Solução:** Modificado `app.py` para **ignorar códigos especiais** (> 500000) na sincronização.
+
+📖 **Documentação da correção:** [`CORRECAO_APLICADA_27-10-2025.md`](./CORRECAO_APLICADA_27-10-2025.md)
+
+### **Códigos Especiais do Sistema Prime**
+
+⚠️ **Não deletar estes códigos!** São clientes especiais do sistema:
+
+| Código | Nome | Uso |
+|--------|------|-----|
+| 9999999 | VENDA AO CONSUMIDOR | Vendas sem cadastro completo |
+
+**Faixa de clientes normais:** 1 até ~37.500
+
+---
+
+### 📚 Documentação Adicional
+
+**Diagnóstico:**
+- [`verificar_cliente_9999999_simples.py`](./verificar_cliente_9999999_simples.py) - Verifica se cliente existe no Firebird
+- [`comparar_clientes_firebird_supabase.py`](./comparar_clientes_firebird_supabase.py) - Compara bases
+- [`verificar_todas_tabelas.sql`](./verificar_todas_tabelas.sql) - Dashboard de monitoramento
+
+**Correções para tipos_processo:**
+- [`corrigir_tipos_processo_upsert.py`](./corrigir_tipos_processo_upsert.py) - Implementar UPSERT
+- [`corrigir_tipos_processo_duplicados.sql`](./corrigir_tipos_processo_duplicados.sql) - Remove duplicatas
+
+---
+
 ## 📋 Características
 
 - ✅ **Sincronização Incremental** - Apenas novos registros

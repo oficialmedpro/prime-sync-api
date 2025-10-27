@@ -68,24 +68,36 @@ def limpar_string(texto):
     return str(texto).replace('\x00', '').replace('\u0000', '').strip() or None
 
 def get_ultimo_id_supabase(tabela, campo_id='codigo_cliente_original'):
-    """Pega o maior ID já migrado"""
+    """Pega o maior ID já migrado (ignorando códigos especiais > 500000)"""
     try:
         url = f"{SUPABASE_URL}/rest/v1/{tabela}"
+        
+        # Params base
+        params = {
+            'select': campo_id,
+            'order': f'{campo_id}.desc',
+            'limit': 1
+        }
+        
+        # Para clientes, ignorar códigos especiais (> 500000)
+        # Exemplo: código 9999999 = "VENDA AO CONSUMIDOR" (cliente especial do Prime)
+        if tabela == 'prime_clientes':
+            params[campo_id] = 'lt.500000'  # Busca apenas códigos < 500000
+        
         response = requests.get(
             url,
             headers=headers,
-            params={
-                'select': campo_id,
-                'order': f'{campo_id}.desc',
-                'limit': 1
-            },
+            params=params,
             timeout=10
         )
 
         if response.status_code == 200:
             dados = response.json()
             if dados:
-                return dados[0][campo_id]
+                ultimo_id = dados[0][campo_id]
+                if tabela == 'prime_clientes':
+                    logger.info(f"   (Ignorando códigos especiais > 500000)")
+                return ultimo_id
         return 0
     except Exception as e:
         logger.error(f"Erro ao buscar último ID de {tabela}: {e}")
@@ -131,6 +143,7 @@ def sync_clientes_novos():
             LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
             WHERE C.ATIVO = -1
             AND C.CODIGO > {ultimo_codigo}
+            AND C.CODIGO < 500000
             ORDER BY C.CODIGO
             ROWS 1000
         """)
