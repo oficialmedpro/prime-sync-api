@@ -174,41 +174,23 @@ def sync_clientes_novos():
                 numero = str(row[9]).strip() if row[9] else ""
                 telefone = (prefixo + numero).strip() or None
 
-            # Montar cliente com apenas campos essenciais
+            # Montar cliente com TODOS os campos (mesmo que None)
+            # IMPORTANTE: Todos os objetos devem ter as mesmas chaves para evitar erro PGRST102
             cliente = {
                 'codigo_cliente_original': row[0],
                 'nome': limpar_string(row[1])[:255] if row[1] else None,
                 'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'ativo': bool(row[15]) if row[15] is not None else True
+                'ativo': bool(row[15]) if row[15] is not None else True,
+                'data_nascimento': data_nasc,  # Sempre presente (pode ser None)
+                'sexo': str(row[6])[:1] if row[6] else None,
+                'email': limpar_string(row[7])[:255] if row[7] else None,
+                'telefone': telefone,  # Sempre presente (pode ser None)
+                'endereco_logradouro': limpar_string(row[10])[:255] if row[10] else None,
+                'endereco_numero': str(row[11]) if row[11] else None,
+                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
+                'endereco_cidade': limpar_string(row[13])[:100] if row[13] else None,
+                'endereco_estado': limpar_string(row[14])[:2] if row[14] else None
             }
-            
-            # Adicionar campos opcionais apenas se tiverem valor
-            if data_nasc:
-                cliente['data_nascimento'] = data_nasc
-            
-            if row[6]:  # SEXO
-                cliente['sexo'] = str(row[6])[:1]
-            
-            if row[7]:  # EMAIL
-                cliente['email'] = limpar_string(row[7])[:255]
-            
-            if telefone:
-                cliente['telefone'] = telefone
-            
-            if row[10]:  # ENDERECO
-                cliente['endereco_logradouro'] = limpar_string(row[10])[:255]
-            
-            if row[11]:  # NUMERO
-                cliente['endereco_numero'] = str(row[11])
-            
-            if row[12]:  # CEP
-                cliente['endereco_cep'] = limpar_string(row[12])[:10]
-            
-            if row[13]:  # CIDADE
-                cliente['endereco_cidade'] = limpar_string(row[13])[:100]
-            
-            if row[14]:  # UF
-                cliente['endereco_estado'] = limpar_string(row[14])[:2]
             clientes_dados.append(cliente)
 
         # Inserir no Supabase
