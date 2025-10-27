@@ -240,6 +240,7 @@ def sync_pedidos_novos():
             SELECT
                 A.CODIGO,
                 A.CODIGO_CLIENTE,
+                A.CADASTRO_DT,
                 A.AVIADA_DT,
                 A.ENTREGUE_DT,
                 A.VALORVENDA,
@@ -279,11 +280,7 @@ def sync_pedidos_novos():
 
         pedidos_dados = []
         for row in novos_pedidos:
-            codigo_orcamento, codigo_cliente, aviada_dt, entregue_dt, valor_venda, observacao = row
-            
-            # AVIADA_DT é a "Data do pedido" no Prime (conforme documentação)
-            # Usar AVIADA_DT como data_criacao
-            data_criacao = aviada_dt
+            codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
 
             cliente_id = cache_clientes.get(codigo_cliente)
             if not cliente_id:
@@ -303,7 +300,7 @@ def sync_pedidos_novos():
                 'codigo_orcamento_original': codigo_orcamento,
                 'codigo_cliente_original': codigo_cliente,
                 'cliente_id': cliente_id,
-                'data_criacao': data_criacao.isoformat() if data_criacao else None,
+                'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
                 'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
                 'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
                 'valor_total': float(valor_venda) if valor_venda else 0.0,
