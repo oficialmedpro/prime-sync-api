@@ -38,28 +38,48 @@ print("="*80)
 
 try:
     # ========================================================================
-    # 1. BUSCAR TODOS OS PEDIDOS NO SUPABASE
+    # 1. BUSCAR TODOS OS PEDIDOS NO SUPABASE (COM PAGINACAO)
     # ========================================================================
     print("\n1. Buscando todos os pedidos no Supabase...")
     
     url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-    response = requests.get(
+    
+    # Buscar total
+    response_count = requests.get(
         url,
         headers={**headers, 'Prefer': 'count=exact'},
-        params={
-            'select': 'id,codigo_orcamento_original,data_criacao',
-            'limit': 10000  # Ajuste se tiver mais pedidos
-        }
+        params={'select': 'id', 'limit': 0}
     )
-    
-    if response.status_code != 200:
-        print(f"   ERRO ao buscar pedidos: {response.status_code}")
-        exit(1)
-    
-    pedidos_supabase = response.json()
-    total_count = int(response.headers.get('Content-Range', '0').split('/')[-1])
+    total_count = int(response_count.headers.get('Content-Range', '0').split('/')[-1])
     
     print(f"   Total de pedidos: {total_count}")
+    
+    # Buscar em lotes
+    pedidos_supabase = []
+    batch_size_fetch = 1000
+    
+    for i in range(0, total_count, batch_size_fetch):
+        response = requests.get(
+            url,
+            headers=headers,
+            params={
+                'select': 'id,codigo_orcamento_original,data_criacao',
+                'limit': batch_size_fetch,
+                'offset': i
+            }
+        )
+        
+        if response.status_code not in [200, 206]:
+            print(f"   ERRO: {response.status_code}")
+            exit(1)
+        
+        batch = response.json()
+        pedidos_supabase.extend(batch)
+        
+        if i % 5000 == 0 or i + batch_size_fetch >= total_count:
+            print(f"   Baixados: {len(pedidos_supabase)}/{total_count}")
+    
+    print(f"   Total baixado: {len(pedidos_supabase)}")
     
     if not pedidos_supabase:
         print("\n   Nenhum pedido encontrado!")
@@ -70,7 +90,7 @@ try:
     print(f"   Códigos: {min(codigos_pedidos)} até {max(codigos_pedidos)}")
     
     # ========================================================================
-    # 2. BUSCAR CADASTRO_DT NO FIREBIRD (EM LOTE COM CACHE)
+    # 2. BUSCAR CADASTRO_DT NO FIREBIRD (EM LOTES PEQUENOS)
     # ========================================================================
     print("\n2. Buscando CADASTRO_DT no Firebird...")
     
@@ -84,33 +104,44 @@ try:
     
     cursor = conn.cursor()
     
-    # Buscar em lote (muito mais rápido)
-    codigos_str = ','.join(map(str, codigos_pedidos))
+    # Buscar em lotes de 500 códigos (Firebird tem limite de tamanho de query)
+    cache_firebird = {}
+    batch_size_firebird = 500
+    total_buscados = 0
     
-    cursor.execute(f"""
-        SELECT
-            A.CODIGO,
-            A.CADASTRO_DT,
-            A.AVIADA_DT,
-            A.ENTREGUE_DT
-        FROM ATENDIMENTO_A1 A
-        WHERE A.CODIGO IN ({codigos_str})
-    """)
+    for i in range(0, len(codigos_pedidos), batch_size_firebird):
+        batch_codigos = codigos_pedidos[i:i+batch_size_firebird]
+        codigos_str = ','.join(map(str, batch_codigos))
+        
+        cursor.execute(f"""
+            SELECT
+                A.CODIGO,
+                A.CADASTRO_DT,
+                A.AVIADA_DT,
+                A.ENTREGUE_DT
+            FROM ATENDIMENTO_A1 A
+            WHERE A.CODIGO IN ({codigos_str})
+        """)
+        
+        batch_pedidos = cursor.fetchall()
+        
+        # Adicionar ao cache
+        for row in batch_pedidos:
+            codigo, cadastro_dt, aviada_dt, entregue_dt = row
+            cache_firebird[codigo] = {
+                'cadastro_dt': cadastro_dt.isoformat() if cadastro_dt else None,
+                'aviada_dt': aviada_dt.isoformat() if aviada_dt else None,
+                'entregue_dt': entregue_dt.isoformat() if entregue_dt else None
+            }
+        
+        total_buscados += len(batch_pedidos)
+        
+        if i % 2500 == 0 or i + batch_size_firebird >= len(codigos_pedidos):
+            print(f"   Buscados: {total_buscados}/{len(codigos_pedidos)}")
     
-    pedidos_firebird = cursor.fetchall()
     conn.close()
     
-    print(f"   Encontrados: {len(pedidos_firebird)} pedidos no Firebird")
-    
-    # Criar cache (dict) para acesso rápido
-    cache_firebird = {}
-    for row in pedidos_firebird:
-        codigo, cadastro_dt, aviada_dt, entregue_dt = row
-        cache_firebird[codigo] = {
-            'cadastro_dt': cadastro_dt.isoformat() if cadastro_dt else None,
-            'aviada_dt': aviada_dt.isoformat() if aviada_dt else None,
-            'entregue_dt': entregue_dt.isoformat() if entregue_dt else None
-        }
+    print(f"   Total encontrado: {len(cache_firebird)} pedidos no Firebird")
     
     # ========================================================================
     # 3. ATUALIZAR EM LOTE NO SUPABASE
