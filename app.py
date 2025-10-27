@@ -174,23 +174,41 @@ def sync_clientes_novos():
                 numero = str(row[9]).strip() if row[9] else ""
                 telefone = (prefixo + numero).strip() or None
 
+            # Montar cliente com apenas campos essenciais
             cliente = {
                 'codigo_cliente_original': row[0],
                 'nome': limpar_string(row[1])[:255] if row[1] else None,
                 'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'email': limpar_string(row[7])[:255] if row[7] else None,
-                'telefone': telefone,
-                'endereco_logradouro': limpar_string(row[10])[:255] if row[10] else None,
-                'endereco_numero': str(row[11]) if row[11] else None,
-                'endereco_cidade': limpar_string(row[13])[:100] if row[13] else None,
-                'endereco_estado': limpar_string(row[14])[:2] if row[14] else None,
-                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
-                'data_nascimento': data_nasc,
-                'sexo': str(row[6])[:1] if row[6] else None,
-                'data_cadastro': None,  # Não temos DATACADASTRO na consulta
-                'ativo': bool(row[15]) if row[15] is not None else True,
-                'updated_at': datetime.now().isoformat()
+                'ativo': bool(row[15]) if row[15] is not None else True
             }
+            
+            # Adicionar campos opcionais apenas se tiverem valor
+            if data_nasc:
+                cliente['data_nascimento'] = data_nasc
+            
+            if row[6]:  # SEXO
+                cliente['sexo'] = str(row[6])[:1]
+            
+            if row[7]:  # EMAIL
+                cliente['email'] = limpar_string(row[7])[:255]
+            
+            if telefone:
+                cliente['telefone'] = telefone
+            
+            if row[10]:  # ENDERECO
+                cliente['endereco_logradouro'] = limpar_string(row[10])[:255]
+            
+            if row[11]:  # NUMERO
+                cliente['endereco_numero'] = str(row[11])
+            
+            if row[12]:  # CEP
+                cliente['endereco_cep'] = limpar_string(row[12])[:10]
+            
+            if row[13]:  # CIDADE
+                cliente['endereco_cidade'] = limpar_string(row[13])[:100]
+            
+            if row[14]:  # UF
+                cliente['endereco_estado'] = limpar_string(row[14])[:2]
             clientes_dados.append(cliente)
 
         # Inserir no Supabase
@@ -760,8 +778,18 @@ def sync_tipos_processo_novos():
         if not tipos_dados:
             return {'inseridos': 0, 'mensagem': 'Nenhum tipo válido'}
 
+        # Headers com UPSERT (merge duplicates)
+        headers_upsert = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Content-Type': 'application/json',
+            'Accept-Profile': 'api',
+            'Content-Profile': 'api',
+            'Prefer': 'resolution=merge-duplicates,return=representation'
+        }
+
         url = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
-        response = requests.post(url, headers=headers, json=tipos_dados, timeout=60)
+        response = requests.post(url, headers=headers_upsert, json=tipos_dados, timeout=60)
 
         if response.status_code in [200, 201]:
             return {
