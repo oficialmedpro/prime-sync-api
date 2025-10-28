@@ -114,13 +114,21 @@ def conectar_firebird():
     )
 
 def sync_clientes_novos():
-    """Sincroniza apenas clientes novos"""
+    """Sincroniza apenas clientes novos
+    
+    🚨 IMPORTANTE: Busca dados de 3 tabelas:
+    1. CLIENTE (dados básicos)
+    2. CADASTRO_TELEFONE (telefones - WHERE TIPO_CADASTRO = 1)
+    3. CADASTRO_ENDERECO (endereços - WHERE TIPO_CADASTRO = 1)
+    """
     try:
         ultimo_codigo = get_ultimo_id_supabase('prime_clientes', 'codigo_cliente_original')
         logger.info(f"📊 Clientes - Último código: {ultimo_codigo}")
 
         conn = conectar_firebird()
         cursor = conn.cursor()
+        
+        # 1. Buscar clientes básicos
         cursor.execute(f"""
             SELECT 
                 C.CODIGO,
@@ -131,11 +139,6 @@ def sync_clientes_novos():
                 C.ANONASCIMENTO,
                 C.SEXO,
                 C.EMAIL1,
-                C.TELEFONEPREFIXO,
-                C.TELEFONE1,
-                C.ENDERECO,
-                C.NUMERO,
-                C.CEP,
                 CE.NOMECIDADE,
                 CE.UF,
                 C.ATIVO
@@ -149,16 +152,104 @@ def sync_clientes_novos():
         """)
 
         novos_clientes = cursor.fetchall()
-        conn.close()
 
         if not novos_clientes:
+            conn.close()
             return {'inseridos': 0, 'mensagem': 'Nenhum cliente novo'}
 
         logger.info(f"✅ Encontrados {len(novos_clientes)} clientes novos")
+        
+        # 2. Buscar telefones desses clientes (tabela CADASTRO_TELEFONE)
+        codigos = [row[0] for row in novos_clientes]
+        codigos_str = ','.join(map(str, codigos))
+        
+        cursor.execute(f"""
+            SELECT 
+                CT.CODIGO_CADASTRO,
+                CT.TELEFONEPREFIXO,
+                CT.TELEFONE
+            FROM CADASTRO_TELEFONE CT
+            WHERE CT.TIPO_CADASTRO = 1
+            AND CT.CODIGO_CADASTRO IN ({codigos_str})
+        """)
+        
+        telefones_dict = {}
+        for tel_row in cursor.fetchall():
+            codigo_cli = tel_row[0]
+            prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
+            numero = str(tel_row[2]).strip() if tel_row[2] else ""
+            telefone_completo = (prefixo + numero).strip() or None
+            
+            if telefone_completo and codigo_cli not in telefones_dict:
+                telefones_dict[codigo_cli] = telefone_completo
+        
+        # 3. Buscar endereços desses clientes (tabela CADASTRO_ENDERECO)
+        cursor.execute(f"""
+            SELECT 
+                CE.CODIGO_CADASTRO,
+                CE.ENDERECO,
+                CE.NUMERO,
+                CE.CEP
+            FROM CADASTRO_ENDERECO CE
+            WHERE CE.TIPO_CADASTRO = 1
+            AND CE.CODIGO_CADASTRO IN ({codigos_str})
+        """)
+        
+        enderecos_dict = {}
+        for end_row in cursor.fetchall():
+            codigo_cli = end_row[0]
+            if codigo_cli not in enderecos_dict:
+                enderecos_dict[codigo_cli] = {
+                    'logradouro': end_row[1],
+                    'numero': end_row[2],
+                    'cep': end_row[3]
+                }
+        
+        # 4. Buscar totalizadores de pedidos (para calcular total_orcamentos, etc)
+        cursor.execute(f"""
+            SELECT 
+                A.CODIGO_CLIENTE,
+                COUNT(*) as total,
+                COUNT(A.AVIADA_DT) as aprovados,
+                COUNT(A.ENTREGUE_DT) as entregues,
+                COALESCE(SUM(A.VALORVENDA), 0) as valor_total,
+                COALESCE(SUM(CASE WHEN A.AVIADA_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_aprovado,
+                COALESCE(SUM(CASE WHEN A.ENTREGUE_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_entregue,
+                MIN(A.CADASTRO_DT) as primeira_compra,
+                MAX(A.CADASTRO_DT) as ultima_compra
+            FROM ATENDIMENTO_A1 A
+            WHERE A.CODIGO_CLIENTE IN ({codigos_str})
+            GROUP BY A.CODIGO_CLIENTE
+        """)
+        
+        totalizadores_dict = {}
+        for tot_row in cursor.fetchall():
+            codigo_cli = tot_row[0]
+            total = tot_row[1] or 1
+            total_aprov = tot_row[2] or 1
+            total_entreg = tot_row[3] or 1
+            
+            totalizadores_dict[codigo_cli] = {
+                'total_orcamentos': tot_row[1] or 0,
+                'total_orcamentos_aprovados': tot_row[2] or 0,
+                'total_orcamentos_entregues': tot_row[3] or 0,
+                'valor_total_orcamentos': float(tot_row[4]) if tot_row[4] else 0.0,
+                'valor_total_aprovados': float(tot_row[5]) if tot_row[5] else 0.0,
+                'valor_total_entregues': float(tot_row[6]) if tot_row[6] else 0.0,
+                'valor_medio_orcamento': float(tot_row[4] / total) if tot_row[4] else 0.0,
+                'valor_medio_aprovado': float(tot_row[5] / total_aprov) if tot_row[5] else 0.0,
+                'valor_medio_entregue': float(tot_row[6] / total_entreg) if tot_row[6] else 0.0,
+                'primeira_compra': tot_row[7].date() if tot_row[7] else None,
+                'ultima_compra': tot_row[8].date() if tot_row[8] else None
+            }
+        
+        conn.close()
 
-        # Preparar dados
+        # 4. Preparar dados combinando as 3 fontes
         clientes_dados = []
         for row in novos_clientes:
+            codigo_cliente = row[0]
+            
             # Formatar data de nascimento
             data_nasc = None
             if row[3] and row[4] and row[5]:  # DIANASCIMENTO, MESNASCIMENTO, ANONASCIMENTO
@@ -167,37 +258,52 @@ def sync_clientes_novos():
                 except:
                     pass
 
-            # Formatar telefone (prefixo + número)
-            telefone = None
-            if row[8] or row[9]:  # TELEFONEPREFIXO ou TELEFONE1
-                prefixo = str(row[8]).strip() if row[8] else ""
-                numero = str(row[9]).strip() if row[9] else ""
-                telefone = (prefixo + numero).strip() or None
+            # Buscar telefone da tabela CADASTRO_TELEFONE
+            telefone = telefones_dict.get(codigo_cliente)
+            
+            # Buscar endereço da tabela CADASTRO_ENDERECO
+            endereco = enderecos_dict.get(codigo_cliente, {})
+            
+            # Buscar totalizadores
+            totalizadores = totalizadores_dict.get(codigo_cliente, {})
 
             # Montar cliente com TODOS os campos (mesmo que None)
             # IMPORTANTE: Todos os objetos devem ter as mesmas chaves para evitar erro PGRST102
             cliente = {
-                'codigo_cliente_original': row[0],
+                'codigo_cliente_original': codigo_cliente,
                 'nome': limpar_string(row[1])[:255] if row[1] else None,
                 'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'ativo': bool(row[15]) if row[15] is not None else True,
+                'ativo': bool(row[10]) if row[10] is not None else True,
                 'data_nascimento': data_nasc,  # Sempre presente (pode ser None)
                 'sexo': str(row[6])[:1] if row[6] else None,
                 'email': limpar_string(row[7])[:255] if row[7] else None,
-                'telefone': telefone,  # Sempre presente (pode ser None)
-                'endereco_logradouro': limpar_string(row[10])[:255] if row[10] else None,
-                'endereco_numero': str(row[11]) if row[11] else None,
-                'endereco_cep': limpar_string(row[12])[:10] if row[12] else None,
-                'endereco_cidade': limpar_string(row[13])[:100] if row[13] else None,
-                'endereco_estado': limpar_string(row[14])[:2] if row[14] else None
+                'telefone': telefone,  # Da tabela CADASTRO_TELEFONE
+                'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
+                'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
+                'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
+                'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
+                'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
+                # Totalizadores de pedidos
+                'total_orcamentos': totalizadores.get('total_orcamentos', 0),
+                'total_orcamentos_aprovados': totalizadores.get('total_orcamentos_aprovados', 0),
+                'total_orcamentos_entregues': totalizadores.get('total_orcamentos_entregues', 0),
+                'valor_total_orcamentos': totalizadores.get('valor_total_orcamentos', 0.0),
+                'valor_total_aprovados': totalizadores.get('valor_total_aprovados', 0.0),
+                'valor_total_entregues': totalizadores.get('valor_total_entregues', 0.0),
+                'valor_medio_orcamento': totalizadores.get('valor_medio_orcamento', 0.0),
+                'valor_medio_aprovado': totalizadores.get('valor_medio_aprovado', 0.0),
+                'valor_medio_entregue': totalizadores.get('valor_medio_entregue', 0.0),
+                'primeira_compra': totalizadores.get('primeira_compra'),
+                'ultima_compra': totalizadores.get('ultima_compra')
             }
             clientes_dados.append(cliente)
 
-        # Inserir no Supabase
+        # 5. Inserir no Supabase
         url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
         response = requests.post(url, headers=headers, json=clientes_dados, timeout=30)
 
         if response.status_code in [200, 201]:
+            logger.info(f"✅ {len(clientes_dados)} clientes sincronizados COM telefones e endereços das tabelas relacionadas")
             return {
                 'inseridos': len(clientes_dados),
                 'mensagem': f'{len(clientes_dados)} clientes sincronizados'
