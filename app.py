@@ -239,8 +239,8 @@ def sync_clientes_novos():
                 'valor_medio_orcamento': float(tot_row[4] / total) if tot_row[4] else 0.0,
                 'valor_medio_aprovado': float(tot_row[5] / total_aprov) if tot_row[5] else 0.0,
                 'valor_medio_entregue': float(tot_row[6] / total_entreg) if tot_row[6] else 0.0,
-                'primeira_compra': tot_row[7].date() if tot_row[7] else None,
-                'ultima_compra': tot_row[8].date() if tot_row[8] else None
+                'primeira_compra': tot_row[7].date().isoformat() if tot_row[7] else None,
+                'ultima_compra': tot_row[8].date().isoformat() if tot_row[8] else None
             }
         
         conn.close()
