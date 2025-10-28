@@ -824,6 +824,187 @@ def health():
         'version': '2.0.0'
     })
 
+def sync_missing_pedidos():
+    """Sincroniza pedidos faltantes (buracos)"""
+    try:
+        logger.info("🔍 Buscando pedidos faltantes...")
+
+        # Pegar todos códigos de pedidos já no Supabase
+        todos_pedidos_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'codigo_orcamento_original',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_orcamento_original.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_pedidos_sb.extend([d['codigo_orcamento_original'] for d in dados])
+                offset += limit
+            else:
+                break
+
+        codigos_sb = set(todos_pedidos_sb)
+        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
+
+        logger.info(f"   {len(codigos_sb)} pedidos já sincronizados (max: {max_codigo_sb})")
+
+        # Buscar todos pedidos do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM ATENDIMENTO_A1
+            WHERE CODIGO_CLIENTE IS NOT NULL
+            AND CODIGO <= {max_codigo_sb}
+            ORDER BY CODIGO
+        """)
+
+        todos_pedidos_fb = [row[0] for row in cursor.fetchall()]
+        codigos_fb = set(todos_pedidos_fb)
+
+        logger.info(f"   {len(codigos_fb)} pedidos no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = codigos_fb - codigos_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum pedido faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} pedidos FALTANTES identificados!")
+
+        # Buscar dados dos pedidos faltantes (em lotes de 1000)
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+
+        for i in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[i:i+1000]
+            codigos_str = ','.join(map(str, lote))
+
+            cursor.execute(f"""
+                SELECT
+                    A.CODIGO,
+                    A.CODIGO_CLIENTE,
+                    A.CADASTRO_DT,
+                    A.AVIADA_DT,
+                    A.ENTREGUE_DT,
+                    A.VALORVENDA,
+                    A.OBSERVACAO
+                FROM ATENDIMENTO_A1 A
+                WHERE A.CODIGO IN ({codigos_str})
+            """)
+
+            pedidos_faltantes = cursor.fetchall()
+
+            # Buscar clientes
+            codigos_cliente = list(set([row[1] for row in pedidos_faltantes]))
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_cliente_original',
+                    'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+                },
+                timeout=30
+            )
+
+            cache_clientes = {}
+            if response.status_code == 200:
+                for cli in response.json():
+                    cache_clientes[cli['codigo_cliente_original']] = cli['id']
+
+            # Preparar dados
+            pedidos_dados = []
+            for row in pedidos_faltantes:
+                codigo_cli = row[1]
+                if codigo_cli not in cache_clientes:
+                    continue
+
+                pedidos_dados.append({
+                    'codigo_orcamento_original': row[0],
+                    'cliente_id': cache_clientes[codigo_cli],
+                    'codigo_cliente_original': codigo_cli,
+                    'data_criacao': row[2].isoformat() if row[2] else None,
+                    'data_aprovacao': row[3].isoformat() if row[3] else None,
+                    'data_entrega': row[4].isoformat() if row[4] else None,
+                    'valor_total': float(row[5]) if row[5] else 0.0,
+                    'observacoes': limpar_string(row[6]),
+                    'status': 'aprovado' if row[3] else 'pendente'
+                })
+
+            if pedidos_dados:
+                # Usar ignore-duplicates para evitar erro
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                    headers=headers_insert,
+                    json=pedidos_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    total_inseridos += len(pedidos_dados)
+                    logger.info(f"   ✅ Lote {i//1000 + 1}: {len(pedidos_dados)} pedidos inseridos")
+
+        conn.close()
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} pedidos faltantes sincronizados'
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_pedidos: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+@app.route('/sync-missing', methods=['POST'])
+def sync_missing():
+    """Endpoint para sincronizar registros faltantes"""
+    try:
+        logger.info("="*70)
+        logger.info("🔧 SINCRONIZAÇÃO DE REGISTROS FALTANTES")
+        logger.info("="*70)
+
+        inicio = datetime.now()
+
+        result_pedidos = sync_missing_pedidos()
+        logger.info(f"📋 Pedidos Faltantes: {result_pedidos}")
+
+        tempo_total = (datetime.now() - inicio).total_seconds()
+
+        resultado = {
+            'sucesso': True,
+            'timestamp': datetime.now().isoformat(),
+            'tempo_execucao_segundos': tempo_total,
+            'pedidos_faltantes': result_pedidos,
+            'total_inseridos': result_pedidos.get('inseridos', 0)
+        }
+
+        logger.info(f"✅ CONCLUÍDO - Total: {resultado['total_inseridos']} registros em {tempo_total:.1f}s")
+        return jsonify(resultado)
+
+    except Exception as e:
+        logger.error(f"❌ Erro na sincronização de faltantes: {e}")
+        return jsonify({
+            'sucesso': False,
+            'erro': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
 @app.route('/sync', methods=['GET', 'POST'])
 def sync():
     """Endpoint principal de sincronização"""
