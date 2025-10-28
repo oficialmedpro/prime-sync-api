@@ -231,7 +231,7 @@ def sync_pedidos_novos():
             WHERE A.CODIGO_CLIENTE IS NOT NULL
             AND A.CODIGO > {ultimo_codigo}
             ORDER BY A.CODIGO
-            ROWS 1000
+            ROWS 5000
         """)
 
         novos_pedidos = cursor.fetchall()
@@ -349,7 +349,7 @@ def sync_formulas_novas():
             WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A2.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
-            ROWS 2000
+            ROWS 5000
         """)
 
         novas_formulas = cursor.fetchall()
@@ -425,6 +425,26 @@ def sync_formulas_itens_novos():
             url_itens,
             headers=headers,
             params={
+                'select': 'id',
+                'order': 'id.desc',
+                'limit': 1
+            },
+            timeout=10
+        )
+
+        ultimo_id_supabase = 0
+        if response.status_code == 200:
+            dados = response.json()
+            if dados:
+                ultimo_id_supabase = dados[0]['id']
+
+        logger.info(f"📊 Fórmulas Itens - Último ID Supabase: {ultimo_id_supabase}")
+
+        # Buscar também o último codigo_atendimento para sincronização incremental
+        response2 = requests.get(
+            url_itens,
+            headers=headers,
+            params={
                 'select': 'codigo_atendimento_original',
                 'order': 'codigo_atendimento_original.desc',
                 'limit': 1
@@ -433,11 +453,11 @@ def sync_formulas_itens_novos():
         )
 
         ultimo_codigo = 0
-        if response.status_code == 200:
-            dados = response.json()
-            if dados:
-                ultimo_codigo = dados[0]['codigo_atendimento_original']
-
+        if response2.status_code == 200:
+            dados2 = response2.json()
+            if dados2:
+                ultimo_codigo = dados2[0]['codigo_atendimento_original']
+        
         logger.info(f"📊 Fórmulas Itens - Último código atendimento: {ultimo_codigo}")
 
         conn = conectar_firebird()
@@ -459,7 +479,7 @@ def sync_formulas_itens_novos():
             WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
             AND A3.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
-            ROWS 1000
+            ROWS 5000
         """)
 
         novos_itens = cursor.fetchall()
@@ -470,29 +490,33 @@ def sync_formulas_itens_novos():
 
         logger.info(f"✅ Encontrados {len(novos_itens)} itens novos")
 
-        # Buscar fórmulas em lote (cache)
-        chaves_formula = list(set([(row[0], row[1]) for row in novos_itens]))
-
-        # Montar cache de fórmulas
+        # Montar cache COMPLETO de fórmulas com paginação (corrigido 28/10/2025)
+        logger.info("   Montando cache de fórmulas...")
         cache_formulas = {}
-        for codigo_atend, num_formula in chaves_formula[:100]:  # Limitar para não sobrecarregar
-            url_formula = f"{SUPABASE_URL}/rest/v1/prime_formulas"
+        offset = 0
+        while offset < 50000:  # Max 50k fórmulas
             response = requests.get(
-                url_formula,
+                f"{SUPABASE_URL}/rest/v1/prime_formulas",
                 headers=headers,
                 params={
-                    'select': 'id,pedido_id',
-                    'codigo_orcamento_original': f'eq.{codigo_atend}',
-                    'numero_formula': f'eq.{num_formula}',
-                    'limit': 1
+                    'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                    'limit': 1000,
+                    'offset': offset
                 },
-                timeout=5
+                timeout=10
             )
-
             if response.status_code == 200:
                 dados = response.json()
-                if dados:
-                    cache_formulas[(codigo_atend, num_formula)] = dados[0]
+                if not dados:
+                    break
+                for formula in dados:
+                    chave = (formula['codigo_orcamento_original'], formula['numero_formula'])
+                    cache_formulas[chave] = {'id': formula['id'], 'pedido_id': formula['pedido_id']}
+                offset += 1000
+            else:
+                break
+        
+        logger.info(f"   Cache fórmulas: {len(cache_formulas)} carregadas")
 
         itens_dados = []
         for row in novos_itens:
@@ -529,8 +553,12 @@ def sync_formulas_itens_novos():
         if not itens_dados:
             return {'inseridos': 0, 'mensagem': 'Itens sem fórmulas correspondentes'}
 
+        # Headers com ignore-duplicates (corrigido 28/10/2025)
+        headers_insert = headers.copy()
+        headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+        
         url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
-        response = requests.post(url, headers=headers, json=itens_dados, timeout=60)
+        response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
 
         if response.status_code in [200, 201]:
             return {
