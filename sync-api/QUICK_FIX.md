@@ -99,3 +99,4 @@ Se `ultimas_24h = 0` → Há problema!
 
 
 
+

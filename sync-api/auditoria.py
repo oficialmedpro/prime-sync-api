@@ -132,3 +132,4 @@ def listar_ultimas_sincronizacoes(limite=10):
         logger.error(f"❌ Erro ao listar sincronizações: {e}")
         return []
 
+

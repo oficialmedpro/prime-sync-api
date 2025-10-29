@@ -90,3 +90,4 @@ print("   c) Agora que sincronizamos os 119 pedidos, os itens vão funcionar!")
 print("\n✓ Próximo passo: Rodar sincronizar_simples.py para sincronizar os itens")
 
 
+

@@ -117,3 +117,4 @@ print(f"  - ROWS 10000 = {total_pendente // 10000} execucoes do cronjob")
 
 
 
+

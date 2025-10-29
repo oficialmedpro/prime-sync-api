@@ -110,3 +110,4 @@ def sync_tudo():
 Depois basta: `curl -X POST https://sincro.oficialmed.com.br/sync-tudo`
 
 
+

@@ -56,3 +56,4 @@ print("Esses clientes tem anos <= 1900 (provavelmente dados placeholder ou erro)
 print("="*80)
 
 
+

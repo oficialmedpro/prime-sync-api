@@ -221,3 +221,4 @@ grep "ERROR\|ERRO" /var/log/sync-api.log | grep "$(date +%Y-%m-%d)"
 **Status:** ✅ Pronto para deploy
 
 
+

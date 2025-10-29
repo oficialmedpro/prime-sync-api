@@ -138,3 +138,4 @@ print(f"RESULTADO: {corrigidos}/{len(todos_clientes)} clientes corrigidos!")
 print("="*80)
 
 
+

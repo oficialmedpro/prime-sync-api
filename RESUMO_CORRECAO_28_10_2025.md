@@ -238,3 +238,4 @@ Se este problema voltar a acontecer:
 **Criticidade:** Alta → Baixa (0,65% de erro)
 
 
+

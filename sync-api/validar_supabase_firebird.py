@@ -309,3 +309,4 @@ print(f"Finalizado em: {datetime.now()}")
 print("=" * 100)
 
 
+

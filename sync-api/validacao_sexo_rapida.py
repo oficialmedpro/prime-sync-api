@@ -90,3 +90,4 @@ print(f"Percentual de erro: {percentual_erro*100:.2f}%")
 print("="*80)
 
 
+

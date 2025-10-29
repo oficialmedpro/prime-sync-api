@@ -52,3 +52,4 @@ print(f"SEM data de nascimento: {sem_data:,} ({sem_data/total_clientes*100:.2f}%
 print("="*80)
 
 
+
