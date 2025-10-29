@@ -1,0 +1,17 @@
+# Clientes com erro de sincronização
+# Total: 11
+
+# Telefones:
+37545
+37546
+37547
+37548
+37549
+37550
+37551
+37553
+37554
+
+# Endereços:
+37546
+3510
