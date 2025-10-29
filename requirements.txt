@@ -1,5 +1,16 @@
 Flask==3.0.0
-fdb==2.0.2
-requests==2.31.0
 gunicorn==21.2.0
+requests==2.31.0
 python-dotenv==1.0.0
+
+# Driver Firebird
+fdb==2.0.2
+
+# Cliente Supabase
+supabase==2.3.4
+
+# Dependências do Supabase
+httpx==0.25.2
+
+# Utilitários
+python-dateutil==2.8.2

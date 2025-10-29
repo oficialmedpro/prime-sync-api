@@ -1,0 +1,166 @@
+================================================================================
+🚨 ESTRUTURA DO BANCO FIREBIRD - DOCUMENTAÇÃO EXTERNA 🚨
+================================================================================
+
+Data: 28/10/2025
+Problema encontrado: Cliente Nelson Moreno (37479) sincronizado SEM telefone e endereço
+Causa: Script de sincronização não estava buscando tabelas relacionadas
+
+================================================================================
+ESTRUTURA DE DADOS - NUNCA ESQUECER
+================================================================================
+
+CLIENTES NO FIREBIRD POSSUEM DADOS EM 3 TABELAS SEPARADAS:
+
+1. TABELA: CLIENTE
+   ├─ Contém: Dados básicos (nome, CPF, data nascimento, sexo)
+   ├─ Campos: CODIGO, NOMECLIENTE, CPF_CNPJ, DIANASCIMENTO, MESNASCIMENTO, ANONASCIMENTO, SEXO, EMAIL1, ATIVO
+   └─ Relacionamento: Chave primária = CODIGO
+
+2. TABELA: CADASTRO_TELEFONE
+   ├─ Contém: Telefones do cliente (pode ter vários)
+   ├─ Campos: TELEFONEPREFIXO, TELEFONE, OBSERVACAO
+   └─ Relacionamento: WHERE TIPO_CADASTRO = 1 AND CODIGO_CADASTRO = [ID_CLIENTE]
+
+3. TABELA: CADASTRO_ENDERECO
+   ├─ Contém: Endereços do cliente (pode ter vários)
+   ├─ Campos: DESCRICAO, ENDERECO, NUMERO, CEP
+   └─ Relacionamento: WHERE TIPO_CADASTRO = 1 AND CODIGO_CADASTRO = [ID_CLIENTE]
+
+================================================================================
+CAMPO TIPO_CADASTRO
+================================================================================
+
+Este campo indica o tipo de entidade:
+- 1 = Cliente
+- 2 = Fornecedor  
+- 3 = Funcionário
+
+SEMPRE usar TIPO_CADASTRO = 1 para buscar dados de CLIENTES!
+
+================================================================================
+EXEMPLO DE CONSULTA CORRETA
+================================================================================
+
+-- 1. Buscar dados básicos do cliente
+SELECT 
+    C.CODIGO,
+    C.NOMECLIENTE,
+    C.CPF_CNPJ,
+    C.DIANASCIMENTO,
+    C.MESNASCIMENTO,
+    C.ANONASCIMENTO,
+    C.SEXO,
+    C.EMAIL1
+FROM CLIENTE C
+WHERE C.CODIGO = 37479;
+
+-- 2. Buscar telefones do cliente
+SELECT 
+    CT.TELEFONEPREFIXO,
+    CT.TELEFONE,
+    CT.OBSERVACAO
+FROM CADASTRO_TELEFONE CT
+WHERE CT.TIPO_CADASTRO = 1
+AND CT.CODIGO_CADASTRO = 37479;
+
+-- 3. Buscar endereços do cliente  
+SELECT 
+    CE.DESCRICAO,
+    CE.ENDERECO,
+    CE.NUMERO,
+    CE.CEP
+FROM CADASTRO_ENDERECO CE
+WHERE CE.TIPO_CADASTRO = 1
+AND CE.CODIGO_CADASTRO = 37479;
+
+================================================================================
+EXEMPLO REAL - CLIENTE NELSON MORENO
+================================================================================
+
+BUSCANDO ERRADO (só tabela CLIENTE):
+- Nome: NELSON MORENO ✓
+- CPF: 99340950925 ✓
+- Telefone: NULL ✗
+- Endereço: NULL ✗
+
+BUSCANDO CORRETO (3 tabelas):
+- Nome: NELSON MORENO ✓
+- CPF: 99340950925 ✓
+- Telefone: (43) 999729678 ✓  ← da tabela CADASTRO_TELEFONE
+- Endereço: RUA 15 DE NOVEMBRO, 696 - CEP: 88801330 ✓  ← da tabela CADASTRO_ENDERECO
+
+================================================================================
+CONSEQUÊNCIAS DE ESQUECER ISSO
+================================================================================
+
+1. ✗ Clientes sincronizados SEM telefone (mesmo tendo no banco)
+2. ✗ Clientes sincronizados SEM endereço (mesmo tendo no banco)
+3. ✗ Impossível entregar pedidos (não tem endereço de entrega)
+4. ✗ Impossível contatar cliente (não tem telefone)
+5. ✗ Dados incompletos para análises de CRM
+6. ✗ Retrabalho e perda de tempo corrigindo depois
+
+================================================================================
+CHECKLIST ANTES DE QUALQUER SINCRONIZAÇÃO/MIGRAÇÃO
+================================================================================
+
+[ ] Estou buscando da tabela CLIENTE?
+[ ] Estou buscando da tabela CADASTRO_TELEFONE?
+[ ] Estou buscando da tabela CADASTRO_ENDERECO?
+[ ] Usei TIPO_CADASTRO = 1 para clientes?
+[ ] Tratei múltiplos telefones (cliente pode ter mais de um)?
+[ ] Tratei múltiplos endereços (cliente pode ter mais de um)?
+[ ] Montei corretamente a data (DIA/MES/ANO são campos separados)?
+[ ] Testei com pelo menos 3 clientes reais antes de rodar em produção?
+
+================================================================================
+TABELAS RELACIONADAS DE PEDIDOS
+================================================================================
+
+PEDIDOS/ORÇAMENTOS:
+- Tabela: ATENDIMENTO_A1
+- Campos: CODIGO, CODIGO_CLIENTE, CADASTRO_DT, AVIADA_DT, ENTREGUE_DT, VALORVENDA
+- Relacionamento: WHERE CODIGO_CLIENTE = [ID_CLIENTE]
+
+FÓRMULAS DOS PEDIDOS:
+- Tabela: ATENDIMENTO_A2
+- Relacionamento: WHERE CODIGO_ATEND_A1 = [ID_PEDIDO]
+
+ITENS DAS FÓRMULAS:
+- Tabela: ATENDIMENTO_A3
+- Relacionamento: WHERE CODIGO_ATEND_A1 = [ID_PEDIDO]
+
+================================================================================
+ARQUIVOS DE REFERÊNCIA NO PROJETO
+================================================================================
+
+1. ESTRUTURA_FIREBIRD_IMPORTANTE.md (raiz do projeto)
+   └─ Documentação completa da estrutura
+
+2. sync-api/ALERTA_ESTRUTURA_FIREBIRD.md
+   └─ Alerta resumido para desenvolvedores
+
+3. sync-api/verificar_cliente_firebird.py
+   └─ Script com exemplo CORRETO de como buscar todos os dados
+
+================================================================================
+REGRA DE OURO
+================================================================================
+
+🚨 3 TABELAS = DADOS COMPLETOS 🚨
+
+NUNCA busque apenas CLIENTE!
+SEMPRE busque CLIENTE + CADASTRO_TELEFONE + CADASTRO_ENDERECO!
+
+================================================================================
+FIM DA DOCUMENTAÇÃO
+================================================================================
+
+Se precisar de ajuda, consulte os arquivos markdown no projeto.
+Eles contêm exemplos de código SQL e Python prontos para usar.
+
+NÃO IGNORE ESTA DOCUMENTAÇÃO!
+Ela foi criada porque este erro já aconteceu e causou problemas reais.
+
+

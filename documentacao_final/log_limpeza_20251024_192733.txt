@@ -1,0 +1,340 @@
+================================================================================
+LIMPEZA E ORGANIZACAO DO PROJETO
+================================================================================
+Data: 2025-10-24 19:27:33
+Pasta de backup: c:\Banco de Dados Prime\_ARCHIVE\backup_20251024_192733
+
+
+1. Removendo scripts de teste...
+  MOVIDO: teste_10_formulas_itens.py
+  MOVIDO: teste_10_formulas_itens_corrigido.py
+  MOVIDO: teste_10_itens_formulas_join.py
+  MOVIDO: teste_api_supabase.py
+  MOVIDO: teste_atendimento_a3.py
+  MOVIDO: teste_banco_nuvem.py
+  MOVIDO: teste_conexao.py
+  MOVIDO: teste_conexao_correta.py
+  MOVIDO: teste_conexao_supabase.py
+  MOVIDO: teste_conexoes.py
+  MOVIDO: teste_dados_firebird.py
+  MOVIDO: teste_exportar_pedidos.py
+  MOVIDO: teste_formula_simples.py
+  MOVIDO: teste_insercao_correta.py
+  MOVIDO: teste_insercao_pedido.py
+  MOVIDO: teste_pedidos_final.py
+  MOVIDO: teste_pedidos_simples.py
+  MOVIDO: teste_rapido.py
+  MOVIDO: teste_rastreabilidade.py
+  MOVIDO: teste_supabase_simples.py
+  MOVIDO: teste_upsert_supabase.py
+  MOVIDO: testar_leitura_firebird.py
+  MOVIDO: check_quick.py
+  MOVIDO: check_status.py
+Total: 24 arquivos movidos
+
+2. Removendo arquivos SQL de teste...
+  MOVIDO: teste_acesso_tabelas.sql
+  MOVIDO: teste_basico.sql
+  MOVIDO: teste_conexao_nuvem.sql
+  MOVIDO: teste_firebird_simples.sql
+  MOVIDO: teste_leads_ajustado.sql
+  MOVIDO: teste_leads_disponiveis.sql
+  MOVIDO: teste_leads_simples.sql
+  MOVIDO: teste_permissoes.sql
+  MOVIDO: teste_simples.sql
+  MOVIDO: teste_view_clientes.sql
+  MOVIDO: validacao_simples.sql
+Total: 11 arquivos movidos
+
+3. Removendo scripts de exportacao antigos...
+  MOVIDO: export_to_supabase.py
+  MOVIDO: export_to_supabase_nuvem.py
+  MOVIDO: exportar_clientes_completo.py
+  MOVIDO: exportar_clientes_correto.py
+  MOVIDO: exportar_clientes_corrigido_schema.py
+  MOVIDO: exportar_clientes_final.py
+  MOVIDO: exportar_clientes_rapido_batch.py
+  MOVIDO: exportar_firebird_supabase_final.py
+  MOVIDO: exportar_formulas.py
+  MOVIDO: exportar_formulas_itens.py
+  MOVIDO: exportar_formulas_novo.py
+  MOVIDO: exportar_formulas_otimizado.py
+  MOVIDO: exportar_mapeamento_correto.py
+  MOVIDO: exportar_orcamentos_com_status.py
+  MOVIDO: exportar_outras_tabelas.py
+  MOVIDO: exportar_para_supabase_completo.py
+  MOVIDO: exportar_para_supabase_prime.py
+  MOVIDO: exportar_paralelo.py
+  MOVIDO: exportar_pedidos.py
+  MOVIDO: exportar_pedidos_otimizado.py
+  MOVIDO: exportar_rastreabilidade_novo.py
+  MOVIDO: exportar_rastreabilidade_otimizado.py
+  MOVIDO: exportar_rastreabilidade_super_rapido.py
+Total: 23 arquivos movidos
+
+4. Removendo scripts de execucao antigos...
+  MOVIDO: atualizar_clientes_completos.py
+  MOVIDO: atualizar_formulas_itens.py
+  MOVIDO: atualizar_formulas_textorotulo.py
+  MOVIDO: atualizar_sql_direto.py
+  MOVIDO: atualizar_todos_completos.py
+  MOVIDO: atualizar_todos_sql.py
+  MOVIDO: executar_atualizacao_clientes.py
+  MOVIDO: executar_automatico.py
+  MOVIDO: executar_lotes_500.py
+  MOVIDO: executar_migracao_completa.py
+  MOVIDO: executar_migracao_completa_formulas.py
+  MOVIDO: executar_migracao_mcp.py
+  MOVIDO: executar_todos_automatico.py
+  MOVIDO: executar_todos_sqls.py
+Total: 14 arquivos movidos
+
+5. Removendo scripts de migracao antigos...
+  MOVIDO: gerar_migracao_completa.py
+  MOVIDO: gerar_sql_updates.py
+  MOVIDO: migrar_formulas_completo_cache.py
+  MOVIDO: migrar_formulas_itens_completa.py
+  MOVIDO: migrar_formulas_itens_mcp.py
+  MOVIDO: migrar_itens_formulas_completo_cache.py
+  MOVIDO: migrar_restantes.py
+Total: 7 arquivos movidos
+
+6. Removendo migracoes SQL em lotes...
+  MOVIDO: migracao_lote_001.sql
+  MOVIDO: migracao_lote_002.sql
+  MOVIDO: migracao_lote_003.sql
+  MOVIDO: migracao_lote_004.sql
+  MOVIDO: migracao_lote_005.sql
+  MOVIDO: migracao_lote_006.sql
+  MOVIDO: migracao_lote_007.sql
+  MOVIDO: migracao_lote_008.sql
+  MOVIDO: migracao_lote_009.sql
+  MOVIDO: migracao_lote_010.sql
+  MOVIDO: migracao_lote_011.sql
+  MOVIDO: migracao_lote_012.sql
+  MOVIDO: migracao_lote_013.sql
+  MOVIDO: migracao_lote_014.sql
+  MOVIDO: migracao_lote_015.sql
+  MOVIDO: migracao_lote_016.sql
+  MOVIDO: migracao_lote_017.sql
+  MOVIDO: migracao_lote_018.sql
+  MOVIDO: migracao_lote_019.sql
+  MOVIDO: migracao_lote_020.sql
+  MOVIDO: migracao_lote_021.sql
+  MOVIDO: migracao_lote_022.sql
+  MOVIDO: migracao_lote_023.sql
+  MOVIDO: migracao_lote_024.sql
+  MOVIDO: migracao_lote_025.sql
+  MOVIDO: migracao_lote_026.sql
+  MOVIDO: migracao_lote_027.sql
+  MOVIDO: migracao_lote_028.sql
+Total: 28 arquivos movidos
+
+7. Removendo scripts de analise...
+  MOVIDO: analisar_atendimento_a1.sql
+  MOVIDO: analisar_atendimento_a2.sql
+  MOVIDO: analisar_cidadeestado.sql
+  MOVIDO: analisar_clientes.sql
+  MOVIDO: analisar_formulamanipulacao.sql
+  MOVIDO: analisar_formulas.sql
+  MOVIDO: analisar_status_finalizacao.sql
+  MOVIDO: analisar_status_orcamentos.sql
+  MOVIDO: analise_orcamentos_aprovados.sql
+Total: 9 arquivos movidos
+
+8. Removendo scripts de investigacao...
+  MOVIDO: descobrir_colunas_reais.py
+  MOVIDO: explorar_estrutura_firebird.py
+  MOVIDO: investigar_campos_cliente.py
+  MOVIDO: investigar_campos_endereco.sql
+  MOVIDO: investigar_estrutura_firebird.py
+  MOVIDO: investigar_oc_rastreabilidade.sql
+  MOVIDO: investigar_orcamentos_detalhado.sql
+  MOVIDO: investigar_rastreabilidade_processos.sql
+  MOVIDO: investigar_status_pedidos.sql
+  MOVIDO: investigar_tabelas_contato.py
+  MOVIDO: investigar_tabelas_endereco_telefone.sql
+  MOVIDO: investigar_tabelas_status.sql
+  MOVIDO: investigar_tabelas_status_producao.sql
+Total: 13 arquivos movidos
+
+9. Removendo scripts de busca temporarios...
+  MOVIDO: buscar_campos_aviados_aprovados.sql
+  MOVIDO: buscar_clientes_com_dados.py
+  MOVIDO: buscar_clientes_com_email.sql
+  MOVIDO: buscar_clientes_supabase.py
+  MOVIDO: buscar_clientes_teste.py
+  MOVIDO: buscar_dados_completos_lucas.sql
+  MOVIDO: buscar_dados_corretos.py
+  MOVIDO: buscar_dados_lucas.py
+  MOVIDO: buscar_enderecos_corrigido.py
+  MOVIDO: buscar_exemplos_formulas_detalhadas.py
+  MOVIDO: buscar_lote_clientes.py
+  MOVIDO: buscar_lucas_fernandes.sql
+  MOVIDO: buscar_orcamentos_lucas.sql
+  MOVIDO: buscar_orcamentos_lucas_corrigido.sql
+  MOVIDO: buscar_orcamentos_simples.sql
+  MOVIDO: buscar_processos_manipulacao.sql
+  MOVIDO: buscar_status_corrigido.sql
+  MOVIDO: buscar_status_disponiveis.sql
+  MOVIDO: buscar_status_producao.sql
+  MOVIDO: buscar_tabelas_producao.sql
+  MOVIDO: buscar_tipos_processo.sql
+Total: 21 arquivos movidos
+
+10. Removendo scripts de verificacao antigos...
+  MOVIDO: verificar_aprovacao_orcamentos.sql
+  MOVIDO: verificar_atendimento_log.sql
+  MOVIDO: verificar_ativo.sql
+  MOVIDO: verificar_campos_alternativos.sql
+  MOVIDO: verificar_cliente_com_dados.sql
+  MOVIDO: verificar_clientes_estatisticas.sql
+  MOVIDO: verificar_clientes_orcamentos.sql
+  MOVIDO: verificar_criterios.sql
+  MOVIDO: verificar_dados.sql
+  MOVIDO: verificar_dados_clientes.sql
+  MOVIDO: verificar_datas_disponiveis.sql
+  MOVIDO: verificar_estrutura_endereco_telefone.sql
+  MOVIDO: verificar_lucas_completo.sql
+  MOVIDO: verificar_manipulados_lead.sql
+  MOVIDO: verificar_manipulados_lead2.sql
+  MOVIDO: verificar_manipulados_lead3.sql
+  MOVIDO: verificar_manipulados_lucas.sql
+  MOVIDO: verificar_nomes_exatos.sql
+  MOVIDO: verificar_status_mov.sql
+  MOVIDO: verificar_status_ordem_servico.sql
+  MOVIDO: verificar_todos_orcamentos_lucas.sql
+  MOVIDO: verificar_usuario_atual.sql
+  MOVIDO: verificar_views.sql
+Total: 23 arquivos movidos
+
+11. Removendo arquivos de dados temporarios...
+  MOVIDO: dados_12_07_2025.json
+  MOVIDO: dados_12_07_2025.txt
+  MOVIDO: dados_exportacao_teste.txt
+  MOVIDO: dados_gabrielli_henrique_script.json
+  MOVIDO: rastreabilidade_log.txt
+Total: 5 arquivos movidos
+
+12. Removendo utilitarios antigos...
+  MOVIDO: config_supabase.py
+  MOVIDO: contar_clientes_disponiveis.py
+  MOVIDO: contar_itens_formulas.py
+  MOVIDO: contar_tabelas.py
+  MOVIDO: continuar_pedidos.py
+  MOVIDO: corrigir_ids_formulas.py
+  MOVIDO: limpar_formulas_itens.py
+  MOVIDO: inserir_via_api_background.py
+  MOVIDO: monitorar_exportacao.py
+  MOVIDO: monitorar_progresso.py
+  MOVIDO: status_exportacao.py
+Total: 11 arquivos movidos
+
+13. Removendo consultas SQL antigas...
+  MOVIDO: consulta_agrupada_final.sql
+  MOVIDO: consulta_ajustada.sql
+  MOVIDO: consulta_completa_clientes_pedidos.sql
+  MOVIDO: consulta_dia_12_07_2025.sql
+  MOVIDO: consulta_dia_15_10_2025.sql
+  MOVIDO: consulta_export_supabase.sql
+  MOVIDO: consulta_final_clientes_pedidos.sql
+  MOVIDO: consulta_manipulados.sql
+  MOVIDO: consulta_simples_final.sql
+  MOVIDO: consulta_teste_simples.sql
+  MOVIDO: exemplos_orcamentos_aprovados.sql
+  MOVIDO: exemplos_orcamentos_aprovados_corrigido.sql
+  MOVIDO: exemplos_orcamentos_nao_aprovados.sql
+  MOVIDO: exportar_json_automatico.sql
+  MOVIDO: listar_campos_cliente.sql
+  MOVIDO: listar_tabelas.sql
+  MOVIDO: segmentacao_clientes_rfv.sql
+  MOVIDO: view_analise_clientes.sql
+Total: 18 arquivos movidos
+
+14. Removendo relatorios antigos...
+  MOVIDO: consulta_final_funcionando.md
+  MOVIDO: relatorio_analise_banco.md
+  MOVIDO: relatorio_exportacao_json.md
+  MOVIDO: relatorio_lucas_fernandes.md
+  MOVIDO: relatorio_orcamentos_aprovados.md
+  MOVIDO: relatorio_teste_banco_nuvem.md
+  MOVIDO: RESUMO_TESTE_FINAL.md
+Total: 7 arquivos movidos
+
+15. Removendo documentacao antiga/duplicada...
+  MOVIDO: ARQUITETURA.md
+  MOVIDO: CLAUDE_CODE_COMO_PROSSEGUIR.md
+  MOVIDO: DOCUMENTACAO_COMPLETA_SUPABASE.md
+  MOVIDO: ESTRATEGIA_SEGMENTACAO_CLIENTES.md
+  MOVIDO: GUIA_IMPLEMENTACAO_SUPABASE.md
+  MOVIDO: GUIA_MIGRACAO_FORMULAS_COMPLETAS.md
+  MOVIDO: INICIO_RAPIDO.md
+  MOVIDO: README_EXPORTACAO_SUPABASE.md
+Total: 8 arquivos movidos
+
+16. Removendo pastas completas...
+  MOVIDA: pasta CODIGOCERTO/ (completa)
+  MOVIDA: pasta exportar_dados_prime/ (completa)
+
+17. Removendo requirements duplicados (mantendo principal)...
+  MOVIDO: requirements_export_supabase.txt
+  MOVIDO: requirements_supabase.txt
+Total: 2 arquivos movidos
+
+================================================================================
+ORGANIZANDO ARQUIVOS RESTANTES
+================================================================================
+
+1. Organizando scripts de validacao...
+  MOVIDO: verificar_novos_registros.py -> scripts/
+  MOVIDO: validar_migracao_completa.py -> scripts/
+  MOVIDO: validar_status_atual.py -> scripts/
+  MOVIDO: verificar_totais_rapido.py -> scripts/
+  MOVIDO: verificar_estrutura_a2.py -> scripts/
+  MOVIDO: verificar_estruturas_tabelas.py -> scripts/
+  MOVIDO: verificar_codigos_maximos.py -> scripts/
+  MOVIDO: verificar_status.py -> scripts/
+  MOVIDO: verificar_tabelas_supabase.py -> scripts/
+  MOVIDO: validar_scripts_teste.py -> scripts/
+Total: 10 arquivos organizados
+
+2. Organizando schemas SQL...
+  MOVIDO: sql_supabase_rastreabilidade_completo.sql -> schemas/
+  MOVIDO: supabase_schema.sql -> schemas/
+  MOVIDO: supabase_schema_prime.sql -> schemas/
+  MOVIDO: ajustar_tabelas_supabase.sql -> schemas/
+  MOVIDO: corrigir_permissoes_sequencias.sql -> schemas/
+  MOVIDO: sql_criar_tabela_formulas_itens.sql -> schemas/
+  MOVIDO: sql_permissoes_prime_formulas_itens.sql -> schemas/
+  MOVIDO: sql_supabase_api.sql -> schemas/
+  MOVIDO: sql_supabase_api_atualizado.sql -> schemas/
+  MOVIDO: sql_updates_clientes.sql -> schemas/
+Total: 10 arquivos organizados
+
+3. Organizando documentacao...
+
+================================================================================
+RESUMO DA LIMPEZA E ORGANIZACAO
+================================================================================
+
+Arquivos movidos para backup: 241
+Localizacao do backup: c:\Banco de Dados Prime\_ARCHIVE\backup_20251024_192733
+
+ESTRUTURA FINAL DO PROJETO:
+Banco de Dados Prime/
+  |- sync-api/                  # API em producao
+  |- scripts/                   # Scripts de validacao
+  |- schemas/                   # Schemas SQL
+  |- docs/                      # Documentacao
+  |- _ARCHIVE/                  # Backups
+  |- DOCUMENTACAO_FINAL.md      # Documentacao principal
+  |- ARQUIVOS_PARA_REMOVER.md   # Lista de arquivos removidos
+  |- requirements.txt           # Dependencias
+  `- limpar_e_organizar_projeto.py  # Este script
+
+================================================================================
+LIMPEZA CONCLUIDA COM SUCESSO!
+================================================================================
+
+Se precisar recuperar algum arquivo, acesse: c:\Banco de Dados Prime\_ARCHIVE\backup_20251024_192733
+Para remover o backup definitivamente, delete a pasta _ARCHIVE/
