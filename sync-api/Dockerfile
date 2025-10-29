@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código da aplicação
-COPY app.py .
+# Copiar código da aplicação (inclui rotas de auditoria)
+COPY app.py auditoria.py .
 
 # Expor porta
 EXPOSE 5000
