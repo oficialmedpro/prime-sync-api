@@ -3,7 +3,7 @@
 """
 API Flask para Sincronização Incremental Firebird -> Supabase
 Endpoint: /sync (POST ou GET)
-Versão: 2.0.0 - Atualizado com prime_formulas_itens e TEXTOROTULO
+Versão: 2.0.1 - Melhorias no tratamento de erros e logging
 """
 
 from flask import Flask, jsonify, request
@@ -928,7 +928,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.0.0'
+        'version': '2.0.1'
     })
 
 @app.route('/auditoria/historico', methods=['GET'])
