@@ -1153,23 +1153,84 @@ def sync():
             total_firebird=0  # Será atualizado se necessário
         )
 
-        result_clientes = sync_clientes_novos()
-        logger.info(f"📋 Clientes: {result_clientes}")
+        # Sincronizar na ordem correta (respeitando dependências)
+        # 1. Clientes primeiro (não depende de nada)
+        logger.info("\n" + "="*70)
+        logger.info("1️⃣ SINCRONIZANDO CLIENTES (ordem: 1/6)")
+        logger.info("="*70)
+        try:
+            result_clientes = sync_clientes_novos()
+            logger.info(f"📋 Clientes: {result_clientes}")
+            if result_clientes.get('erro'):
+                logger.warning(f"⚠️ Erro em clientes (continuando): {result_clientes['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em clientes: {e}", exc_info=True)
+            result_clientes = {'inseridos': 0, 'erro': str(e)}
 
-        result_pedidos = sync_pedidos_novos()
-        logger.info(f"📋 Pedidos: {result_pedidos}")
+        # 2. Pedidos (depende de clientes)
+        logger.info("\n" + "="*70)
+        logger.info("2️⃣ SINCRONIZANDO PEDIDOS (ordem: 2/6)")
+        logger.info("="*70)
+        try:
+            result_pedidos = sync_pedidos_novos()
+            logger.info(f"📋 Pedidos: {result_pedidos}")
+            if result_pedidos.get('erro'):
+                logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
+            result_pedidos = {'inseridos': 0, 'erro': str(e)}
 
-        result_formulas = sync_formulas_novas()
-        logger.info(f"📋 Fórmulas: {result_formulas}")
+        # 3. Fórmulas (depende de pedidos)
+        logger.info("\n" + "="*70)
+        logger.info("3️⃣ SINCRONIZANDO FÓRMULAS (ordem: 3/6)")
+        logger.info("="*70)
+        try:
+            result_formulas = sync_formulas_novas()
+            logger.info(f"📋 Fórmulas: {result_formulas}")
+            if result_formulas.get('erro'):
+                logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
+            result_formulas = {'inseridos': 0, 'erro': str(e)}
 
-        result_itens = sync_formulas_itens_novos()
-        logger.info(f"📋 Itens: {result_itens}")
+        # 4. Itens de Fórmulas (depende de fórmulas)
+        logger.info("\n" + "="*70)
+        logger.info("4️⃣ SINCRONIZANDO ITENS DE FÓRMULAS (ordem: 4/6)")
+        logger.info("="*70)
+        try:
+            result_itens = sync_formulas_itens_novos()
+            logger.info(f"📋 Itens: {result_itens}")
+            if result_itens.get('erro'):
+                logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
+            result_itens = {'inseridos': 0, 'erro': str(e)}
 
-        result_rastreabilidade = sync_rastreabilidade_nova()
-        logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+        # 5. Rastreabilidade (não tem dependência direta)
+        logger.info("\n" + "="*70)
+        logger.info("5️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 5/6)")
+        logger.info("="*70)
+        try:
+            result_rastreabilidade = sync_rastreabilidade_nova()
+            logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+            if result_rastreabilidade.get('erro'):
+                logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
+            result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
 
-        result_tipos = sync_tipos_processo_novos()
-        logger.info(f"📋 Tipos Processo: {result_tipos}")
+        # 6. Tipos Processo (tabela de referência, não tem dependência)
+        logger.info("\n" + "="*70)
+        logger.info("6️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 6/6)")
+        logger.info("="*70)
+        try:
+            result_tipos = sync_tipos_processo_novos()
+            logger.info(f"📋 Tipos Processo: {result_tipos}")
+            if result_tipos.get('erro'):
+                logger.warning(f"⚠️ Erro em tipos processo (continuando): {result_tipos['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em tipos processo: {e}", exc_info=True)
+            result_tipos = {'inseridos': 0, 'erro': str(e)}
 
         tempo_total = (datetime.now() - inicio).total_seconds()
         
@@ -1182,17 +1243,41 @@ def sync():
             result_tipos.get('inseridos', 0)
         )
 
+        # Verificar se houve erros
+        erros = []
+        if result_clientes.get('erro'):
+            erros.append(f"clientes: {result_clientes['erro']}")
+        if result_pedidos.get('erro'):
+            erros.append(f"pedidos: {result_pedidos['erro']}")
+        if result_formulas.get('erro'):
+            erros.append(f"formulas: {result_formulas['erro']}")
+        if result_itens.get('erro'):
+            erros.append(f"itens: {result_itens['erro']}")
+        if result_rastreabilidade.get('erro'):
+            erros.append(f"rastreabilidade: {result_rastreabilidade['erro']}")
+        if result_tipos.get('erro'):
+            erros.append(f"tipos_processo: {result_tipos['erro']}")
+
         # Verificar integridade
-        integridade = verificar_integridade()
+        try:
+            integridade = verificar_integridade()
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao verificar integridade: {e}")
+            integridade = {'status': 'erro', 'mensagem': str(e)}
 
         # Finalizar auditoria
+        status_final = 'sucesso' if len(erros) == 0 else 'sucesso_com_avisos'
+        mensagem_final = f'Total sincronizado: {total_inseridos} registros'
+        if erros:
+            mensagem_final += f'. Avisos: {"; ".join(erros)}'
+
         finalizar_auditoria(
             auditoria_id=auditoria_id,
             total_supabase=total_inseridos,
             registros_novos=total_inseridos,
             registros_atualizados=0,
-            status='sucesso',
-            mensagem=f'Total sincronizado: {total_inseridos} registros',
+            status=status_final,
+            mensagem=mensagem_final,
             detalhes={
                 'clientes': result_clientes,
                 'pedidos': result_pedidos,
@@ -1200,7 +1285,8 @@ def sync():
                 'formulas_itens': result_itens,
                 'rastreabilidade': result_rastreabilidade,
                 'tipos_processo': result_tipos,
-                'integridade': integridade
+                'integridade': integridade,
+                'avisos': erros if erros else None
             }
         )
 
@@ -1208,7 +1294,7 @@ def sync():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.0.0',
+            'version': '2.0.1',  # Atualizado para refletir melhorias
             'auditoria_id': auditoria_id,
             'clientes': result_clientes,
             'pedidos': result_pedidos,
@@ -1220,7 +1306,13 @@ def sync():
             'integridade': integridade
         }
 
-        logger.info(f"✅ CONCLUÍDO - Total: {total_inseridos} registros em {tempo_total:.1f}s")
+        if erros:
+            resultado['avisos'] = erros
+            logger.warning(f"⚠️ CONCLUÍDO COM AVISOS - Total: {total_inseridos} registros em {tempo_total:.1f}s")
+            logger.warning(f"   Avisos: {len(erros)} tabela(s) com problemas")
+        else:
+            logger.info(f"✅ CONCLUÍDO COM SUCESSO - Total: {total_inseridos} registros em {tempo_total:.1f}s")
+
         return jsonify(resultado)
 
     except Exception as e:
