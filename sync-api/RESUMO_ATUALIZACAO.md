@@ -46,7 +46,7 @@ Todas as sincronizações vão para as tabelas com prefixo `prime_`:
    
    **Depois:**
    ```yaml
-   image: oficialmedpro/prime-sync-api:master-3e42525
+   image: oficialmedpro/prime-sync-api:master-b3ebc8a
    ```
 
 3. Clique em **Update the stack**
