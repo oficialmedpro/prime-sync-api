@@ -13,7 +13,7 @@
 image: oficialmedpro/prime-sync-api:master-7c02624
 
 # DEPOIS (versão nova corrigida):
-image: oficialmedpro/prime-sync-api:master-3e42525
+image: oficialmedpro/prime-sync-api:master-b3ebc8a
 ```
 
 ### 3. Salvar e Atualizar

@@ -1,7 +1,7 @@
 # ✅ API v2.0.1 - Pronta para Deploy
 
 **Data:** 01/11/2025  
-**Commit:** `3e42525`  
+**Commit:** `b3ebc8a`  
 **Status:** ✅ Pronto para deploy no Portainer
 
 ---
@@ -87,7 +87,7 @@ O erro `column "data_criacao" of relation "clientes_mestre" does not exist` que 
 
 ## 📝 Resumo
 
-**Versão atual no GitHub:** v2.0.1 (commit `3e42525`)  
+**Versão atual no GitHub:** v2.0.1 (commit `b3ebc8a`)  
 **Versão no Portainer:** v??? (commit `7c02624`)  
-**Ação necessária:** Atualizar stack para `master-3e42525`
+**Ação necessária:** Atualizar stack para `master-b3ebc8a`
 
