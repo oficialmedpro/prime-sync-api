@@ -954,6 +954,221 @@ def verificar_dados():
         'integridade': resultado
     })
 
+def sync_missing_clientes():
+    """Sincroniza clientes faltantes (buracos) - AUTO-CORREÇÃO"""
+    try:
+        logger.info("🔍 Buscando clientes faltantes...")
+
+        # Pegar todos códigos de clientes já no Supabase
+        todos_clientes_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                headers=headers,
+                params={
+                    'select': 'codigo_cliente_original',
+                    'codigo_cliente_original': 'lt.500000',  # Ignorar códigos especiais
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_cliente_original.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_clientes_sb.extend([d['codigo_cliente_original'] for d in dados])
+                offset += limit
+                if len(dados) < limit:
+                    break
+            else:
+                break
+
+        codigos_sb = set(todos_clientes_sb)
+        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
+
+        logger.info(f"   {len(codigos_sb)} clientes já sincronizados (max: {max_codigo_sb})")
+
+        # Buscar todos clientes do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM CLIENTE
+            WHERE ATIVO = -1
+            AND CODIGO < 500000
+            AND CODIGO <= {max_codigo_sb}
+            ORDER BY CODIGO
+        """)
+
+        todos_clientes_fb = [row[0] for row in cursor.fetchall()]
+        codigos_fb = set(todos_clientes_fb)
+
+        logger.info(f"   {len(codigos_fb)} clientes no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = codigos_fb - codigos_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} clientes FALTANTES identificados!")
+
+        # Para muitos faltantes, retornar apenas informação (não sincronizar todos de uma vez)
+        # A sincronização incremental normal vai pegar esses registros gradualmente
+        if len(faltantes) > 1000:
+            logger.info(f"   ⚠️  Muitos faltantes ({len(faltantes)}). Sincronização incremental vai corrigir gradualmente.")
+            conn.close()
+            return {'inseridos': 0, 'mensagem': f'{len(faltantes)} faltantes detectados (serão corrigidos incrementalmente)'}
+
+        # Buscar dados dos clientes faltantes - usar mesma lógica de sync_clientes_novos
+        faltantes_list = sorted(list(faltantes))
+        codigos_str = ','.join(map(str, faltantes_list))
+
+        # Buscar dados básicos
+        cursor.execute(f"""
+            SELECT 
+                C.CODIGO,
+                C.NOMECLIENTE,
+                C.CPF_CNPJ,
+                C.DIANASCIMENTO,
+                C.MESNASCIMENTO,
+                C.ANONASCIMENTO,
+                C.SEXO,
+                C.EMAIL1,
+                CE.NOMECIDADE,
+                CE.UF,
+                C.ATIVO
+            FROM CLIENTE C
+            LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
+            WHERE C.CODIGO IN ({codigos_str})
+        """)
+
+        clientes_faltantes = cursor.fetchall()
+
+        # Buscar telefones
+        cursor.execute(f"""
+            SELECT 
+                CT.CODIGO_CADASTRO,
+                CT.TELEFONEPREFIXO,
+                CT.TELEFONE
+            FROM CADASTRO_TELEFONE CT
+            WHERE CT.TIPO_CADASTRO = 1
+            AND CT.CODIGO_CADASTRO IN ({codigos_str})
+        """)
+
+        telefones_dict = {}
+        for tel_row in cursor.fetchall():
+            codigo_cli = tel_row[0]
+            prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
+            numero = str(tel_row[2]).strip() if tel_row[2] else ""
+            telefone_completo = (prefixo + numero).strip() or None
+            if telefone_completo and codigo_cli not in telefones_dict:
+                telefones_dict[codigo_cli] = telefone_completo
+
+        # Buscar endereços
+        cursor.execute(f"""
+            SELECT 
+                CE.CODIGO_CADASTRO,
+                CE.ENDERECO,
+                CE.NUMERO,
+                CE.CEP
+            FROM CADASTRO_ENDERECO CE
+            WHERE CE.TIPO_CADASTRO = 1
+            AND CE.CODIGO_CADASTRO IN ({codigos_str})
+        """)
+
+        enderecos_dict = {}
+        for end_row in cursor.fetchall():
+            codigo_cli = end_row[0]
+            if codigo_cli not in enderecos_dict:
+                enderecos_dict[codigo_cli] = {
+                    'logradouro': end_row[1],
+                    'numero': end_row[2],
+                    'cep': end_row[3]
+                }
+
+        # Preparar dados
+        clientes_dados = []
+        for row in clientes_faltantes:
+            codigo_cliente = row[0]
+            
+            # Formatar data de nascimento
+            data_nasc = None
+            if row[3] and row[4] and row[5]:
+                try:
+                    data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
+                except:
+                    pass
+
+            telefone = telefones_dict.get(codigo_cliente)
+            endereco = enderecos_dict.get(codigo_cliente, {})
+
+            cliente = {
+                'codigo_cliente_original': codigo_cliente,
+                'nome': limpar_string(row[1])[:255] if row[1] else None,
+                'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
+                'ativo': bool(row[10]) if row[10] is not None else True,
+                'data_nascimento': data_nasc,
+                'sexo': str(row[6])[:1] if row[6] else None,
+                'email': limpar_string(row[7])[:255] if row[7] else None,
+                'telefone': telefone,
+                'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
+                'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
+                'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
+                'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
+                'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
+                # Campos obrigatórios com valores padrão
+                'total_orcamentos': 0,
+                'total_orcamentos_aprovados': 0,
+                'total_orcamentos_entregues': 0,
+                'valor_total_orcamentos': 0.0,
+                'valor_total_aprovados': 0.0,
+                'valor_total_entregues': 0.0,
+                'valor_medio_orcamento': 0.0,
+                'valor_medio_aprovado': 0.0,
+                'valor_medio_entregue': 0.0,
+            }
+            clientes_dados.append(cliente)
+
+        if clientes_dados:
+            # Usar ignore-duplicates para evitar erro
+            headers_insert = headers.copy()
+            headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+            resp_insert = requests.post(
+                f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                headers=headers_insert,
+                json=clientes_dados,
+                timeout=60
+            )
+
+            if resp_insert.status_code in [200, 201]:
+                total_inseridos = len(clientes_dados)
+                logger.info(f"   ✅ {total_inseridos} clientes faltantes sincronizados")
+                conn.close()
+                return {
+                    'inseridos': total_inseridos,
+                    'mensagem': f'{total_inseridos} clientes faltantes sincronizados'
+                }
+            else:
+                logger.error(f"❌ Erro ao inserir clientes faltantes: {resp_insert.status_code}")
+                conn.close()
+                return {'inseridos': 0, 'erro': f'HTTP {resp_insert.status_code}'}
+
+        conn.close()
+        return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante encontrado'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_clientes: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
 def sync_missing_pedidos():
     """Sincroniza pedidos faltantes (buracos)"""
     try:
@@ -1163,6 +1378,21 @@ def sync():
             logger.info(f"📋 Clientes: {result_clientes}")
             if result_clientes.get('erro'):
                 logger.warning(f"⚠️ Erro em clientes (continuando): {result_clientes['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar clientes faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("1️⃣.1 SINCRONIZANDO CLIENTES FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_clientes_missing = sync_missing_clientes()
+                if result_clientes_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Clientess faltantes sincronizados: {result_clientes_missing}")
+                    # Adicionar ao total de clientes
+                    result_clientes['inseridos'] = result_clientes.get('inseridos', 0) + result_clientes_missing.get('inseridos', 0)
+                    result_clientes['faltantes_sincronizados'] = result_clientes_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar clientes faltantes (continuando): {e}")
+                
         except Exception as e:
             logger.error(f"❌ Erro crítico em clientes: {e}", exc_info=True)
             result_clientes = {'inseridos': 0, 'erro': str(e)}
@@ -1176,6 +1406,21 @@ def sync():
             logger.info(f"📋 Pedidos: {result_pedidos}")
             if result_pedidos.get('erro'):
                 logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar pedidos faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("2️⃣.1 SINCRONIZANDO PEDIDOS FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_pedidos_missing = sync_missing_pedidos()
+                if result_pedidos_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Pedidos faltantes sincronizados: {result_pedidos_missing}")
+                    # Adicionar ao total de pedidos
+                    result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + result_pedidos_missing.get('inseridos', 0)
+                    result_pedidos['faltantes_sincronizados'] = result_pedidos_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes (continuando): {e}")
+                
         except Exception as e:
             logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
             result_pedidos = {'inseridos': 0, 'erro': str(e)}
