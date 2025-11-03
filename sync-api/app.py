@@ -1020,150 +1020,154 @@ def sync_missing_clientes():
 
         logger.info(f"   🔴 {len(faltantes)} clientes FALTANTES identificados!")
 
-        # Para muitos faltantes, retornar apenas informação (não sincronizar todos de uma vez)
-        # A sincronização incremental normal vai pegar esses registros gradualmente
-        if len(faltantes) > 1000:
-            logger.info(f"   ⚠️  Muitos faltantes ({len(faltantes)}). Sincronização incremental vai corrigir gradualmente.")
-            conn.close()
-            return {'inseridos': 0, 'mensagem': f'{len(faltantes)} faltantes detectados (serão corrigidos incrementalmente)'}
-
-        # Buscar dados dos clientes faltantes - usar mesma lógica de sync_clientes_novos
+        # Processar faltantes em lotes de 1000 para evitar timeout
         faltantes_list = sorted(list(faltantes))
-        codigos_str = ','.join(map(str, faltantes_list))
-
-        # Buscar dados básicos
-        cursor.execute(f"""
-            SELECT 
-                C.CODIGO,
-                C.NOMECLIENTE,
-                C.CPF_CNPJ,
-                C.DIANASCIMENTO,
-                C.MESNASCIMENTO,
-                C.ANONASCIMENTO,
-                C.SEXO,
-                C.EMAIL1,
-                CE.NOMECIDADE,
-                CE.UF,
-                C.ATIVO
-            FROM CLIENTE C
-            LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
-            WHERE C.CODIGO IN ({codigos_str})
-        """)
-
-        clientes_faltantes = cursor.fetchall()
-
-        # Buscar telefones
-        cursor.execute(f"""
-            SELECT 
-                CT.CODIGO_CADASTRO,
-                CT.TELEFONEPREFIXO,
-                CT.TELEFONE
-            FROM CADASTRO_TELEFONE CT
-            WHERE CT.TIPO_CADASTRO = 1
-            AND CT.CODIGO_CADASTRO IN ({codigos_str})
-        """)
-
-        telefones_dict = {}
-        for tel_row in cursor.fetchall():
-            codigo_cli = tel_row[0]
-            prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
-            numero = str(tel_row[2]).strip() if tel_row[2] else ""
-            telefone_completo = (prefixo + numero).strip() or None
-            if telefone_completo and codigo_cli not in telefones_dict:
-                telefones_dict[codigo_cli] = telefone_completo
-
-        # Buscar endereços
-        cursor.execute(f"""
-            SELECT 
-                CE.CODIGO_CADASTRO,
-                CE.ENDERECO,
-                CE.NUMERO,
-                CE.CEP
-            FROM CADASTRO_ENDERECO CE
-            WHERE CE.TIPO_CADASTRO = 1
-            AND CE.CODIGO_CADASTRO IN ({codigos_str})
-        """)
-
-        enderecos_dict = {}
-        for end_row in cursor.fetchall():
-            codigo_cli = end_row[0]
-            if codigo_cli not in enderecos_dict:
-                enderecos_dict[codigo_cli] = {
-                    'logradouro': end_row[1],
-                    'numero': end_row[2],
-                    'cep': end_row[3]
-                }
-
-        # Preparar dados
-        clientes_dados = []
-        for row in clientes_faltantes:
-            codigo_cliente = row[0]
+        total_inseridos = 0
+        total_lotes = (len(faltantes_list) + 999) // 1000  # Arredondar para cima
+        
+        # Processar em lotes
+        for lote_idx in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[lote_idx:lote_idx + 1000]
+            codigos_str = ','.join(map(str, lote))
             
-            # Formatar data de nascimento
-            data_nasc = None
-            if row[3] and row[4] and row[5]:
-                try:
-                    data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
-                except:
-                    pass
+            logger.info(f"   📦 Processando lote {lote_idx // 1000 + 1} de {total_lotes} ({len(lote)} clientes)")
 
-            telefone = telefones_dict.get(codigo_cliente)
-            endereco = enderecos_dict.get(codigo_cliente, {})
+            # Buscar dados básicos
+            cursor.execute(f"""
+                SELECT 
+                    C.CODIGO,
+                    C.NOMECLIENTE,
+                    C.CPF_CNPJ,
+                    C.DIANASCIMENTO,
+                    C.MESNASCIMENTO,
+                    C.ANONASCIMENTO,
+                    C.SEXO,
+                    C.EMAIL1,
+                    CE.NOMECIDADE,
+                    CE.UF,
+                    C.ATIVO
+                FROM CLIENTE C
+                LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
+                WHERE C.CODIGO IN ({codigos_str})
+            """)
 
-            cliente = {
-                'codigo_cliente_original': codigo_cliente,
-                'nome': limpar_string(row[1])[:255] if row[1] else None,
-                'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'ativo': bool(row[10]) if row[10] is not None else True,
-                'data_nascimento': data_nasc,
-                'sexo': str(row[6])[:1] if row[6] else None,
-                'email': limpar_string(row[7])[:255] if row[7] else None,
-                'telefone': telefone,
-                'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
-                'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
-                'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
-                'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
-                'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
-                # Campos obrigatórios com valores padrão
-                'total_orcamentos': 0,
-                'total_orcamentos_aprovados': 0,
-                'total_orcamentos_entregues': 0,
-                'valor_total_orcamentos': 0.0,
-                'valor_total_aprovados': 0.0,
-                'valor_total_entregues': 0.0,
-                'valor_medio_orcamento': 0.0,
-                'valor_medio_aprovado': 0.0,
-                'valor_medio_entregue': 0.0,
-            }
-            clientes_dados.append(cliente)
+            clientes_faltantes = cursor.fetchall()
 
-        if clientes_dados:
-            # Usar ignore-duplicates para evitar erro
-            headers_insert = headers.copy()
-            headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+            # Buscar telefones
+            cursor.execute(f"""
+                SELECT 
+                    CT.CODIGO_CADASTRO,
+                    CT.TELEFONEPREFIXO,
+                    CT.TELEFONE
+                FROM CADASTRO_TELEFONE CT
+                WHERE CT.TIPO_CADASTRO = 1
+                AND CT.CODIGO_CADASTRO IN ({codigos_str})
+            """)
 
-            resp_insert = requests.post(
-                f"{SUPABASE_URL}/rest/v1/prime_clientes",
-                headers=headers_insert,
-                json=clientes_dados,
-                timeout=60
-            )
+            telefones_dict = {}
+            for tel_row in cursor.fetchall():
+                codigo_cli = tel_row[0]
+                prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
+                numero = str(tel_row[2]).strip() if tel_row[2] else ""
+                telefone_completo = (prefixo + numero).strip() or None
+                if telefone_completo and codigo_cli not in telefones_dict:
+                    telefones_dict[codigo_cli] = telefone_completo
 
-            if resp_insert.status_code in [200, 201]:
-                total_inseridos = len(clientes_dados)
-                logger.info(f"   ✅ {total_inseridos} clientes faltantes sincronizados")
-                conn.close()
-                return {
-                    'inseridos': total_inseridos,
-                    'mensagem': f'{total_inseridos} clientes faltantes sincronizados'
+            # Buscar endereços
+            cursor.execute(f"""
+                SELECT 
+                    CE.CODIGO_CADASTRO,
+                    CE.ENDERECO,
+                    CE.NUMERO,
+                    CE.CEP
+                FROM CADASTRO_ENDERECO CE
+                WHERE CE.TIPO_CADASTRO = 1
+                AND CE.CODIGO_CADASTRO IN ({codigos_str})
+            """)
+
+            enderecos_dict = {}
+            for end_row in cursor.fetchall():
+                codigo_cli = end_row[0]
+                if codigo_cli not in enderecos_dict:
+                    enderecos_dict[codigo_cli] = {
+                        'logradouro': end_row[1],
+                        'numero': end_row[2],
+                        'cep': end_row[3]
+                    }
+
+            # Preparar dados
+            clientes_dados = []
+            for row in clientes_faltantes:
+                codigo_cliente = row[0]
+                
+                # Formatar data de nascimento
+                data_nasc = None
+                if row[3] and row[4] and row[5]:
+                    try:
+                        data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
+                    except:
+                        pass
+
+                telefone = telefones_dict.get(codigo_cliente)
+                endereco = enderecos_dict.get(codigo_cliente, {})
+
+                cliente = {
+                    'codigo_cliente_original': codigo_cliente,
+                    'nome': limpar_string(row[1])[:255] if row[1] else None,
+                    'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
+                    'ativo': bool(row[10]) if row[10] is not None else True,
+                    'data_nascimento': data_nasc,
+                    'sexo': str(row[6])[:1] if row[6] else None,
+                    'email': limpar_string(row[7])[:255] if row[7] else None,
+                    'telefone': telefone,
+                    'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
+                    'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
+                    'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
+                    'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
+                    'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
+                    # Campos obrigatórios com valores padrão
+                    'total_orcamentos': 0,
+                    'total_orcamentos_aprovados': 0,
+                    'total_orcamentos_entregues': 0,
+                    'valor_total_orcamentos': 0.0,
+                    'valor_total_aprovados': 0.0,
+                    'valor_total_entregues': 0.0,
+                    'valor_medio_orcamento': 0.0,
+                    'valor_medio_aprovado': 0.0,
+                    'valor_medio_entregue': 0.0,
                 }
-            else:
-                logger.error(f"❌ Erro ao inserir clientes faltantes: {resp_insert.status_code}")
-                conn.close()
-                return {'inseridos': 0, 'erro': f'HTTP {resp_insert.status_code}'}
+                clientes_dados.append(cliente)
 
+            if clientes_dados:
+                # Usar ignore-duplicates para evitar erro
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                    headers=headers_insert,
+                    json=clientes_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    lote_inseridos = len(clientes_dados)
+                    total_inseridos += lote_inseridos
+                    logger.info(f"   ✅ Lote {lote_idx // 1000 + 1}: {lote_inseridos} clientes sincronizados")
+                else:
+                    logger.error(f"❌ Erro ao inserir lote {lote_idx // 1000 + 1}: {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:200]}")
+        
         conn.close()
-        return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante encontrado'}
+        
+        if total_inseridos > 0:
+            logger.info(f"   ✅ Total: {total_inseridos} clientes faltantes sincronizados")
+            return {
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} clientes faltantes sincronizados'
+            }
+        else:
+            return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante sincronizado'}
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_missing_clientes: {e}")
