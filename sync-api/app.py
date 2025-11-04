@@ -1543,7 +1543,7 @@ def sync():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.0.7',  # v2.0.7 - auto-correção de registros faltantes
+            'version': '2.0.7',
             'auditoria_id': auditoria_id,
             'clientes': result_clientes,
             'pedidos': result_pedidos,
