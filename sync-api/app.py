@@ -928,7 +928,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.0.1'
+        'version': '2.0.7'
     })
 
 @app.route('/auditoria/historico', methods=['GET'])
@@ -1543,7 +1543,7 @@ def sync():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.0.1',  # Atualizado para refletir melhorias
+            'version': '2.0.7',  # Atualizado para refletir melhorias
             'auditoria_id': auditoria_id,
             'clientes': result_clientes,
             'pedidos': result_pedidos,
