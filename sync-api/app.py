@@ -1606,6 +1606,328 @@ def sync_missing_pedidos():
         logger.error(f"   Stack trace: {traceback.format_exc()}")
         return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
+def sync_missing_formulas():
+    """Sincroniza fórmulas faltantes (buracos)"""
+    try:
+        logger.info("🔍 Buscando fórmulas faltantes...")
+
+        # Pegar todos códigos de fórmulas já no Supabase (comparando por codigo_orcamento_original + numero_formula)
+        todas_formulas_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                headers=headers,
+                params={
+                    'select': 'codigo_orcamento_original,numero_formula',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_orcamento_original.asc,numero_formula.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todas_formulas_sb.extend([(d['codigo_orcamento_original'], d['numero_formula']) for d in dados])
+                offset += limit
+            else:
+                break
+
+        formulas_sb = set(todas_formulas_sb)
+        max_codigo_sb = max([f[0] for f in formulas_sb]) if formulas_sb else 0
+
+        logger.info(f"   {len(formulas_sb)} fórmulas já sincronizadas (max pedido: {max_codigo_sb})")
+
+        # Buscar todas fórmulas do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO_ATEND_A1, NUMEROFORMULA
+            FROM ATENDIMENTO_A2
+            WHERE CODIGO_ATEND_A1 IS NOT NULL
+            AND CODIGO_ATEND_A1 <= {max_codigo_sb}
+            ORDER BY CODIGO_ATEND_A1, NUMEROFORMULA
+        """)
+
+        todas_formulas_fb = [(row[0], row[1]) for row in cursor.fetchall()]
+        formulas_fb = set(todas_formulas_fb)
+
+        logger.info(f"   {len(formulas_fb)} fórmulas no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = formulas_fb - formulas_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} fórmulas FALTANTES identificadas!")
+
+        # Buscar dados das fórmulas faltantes (em lotes de 1000)
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+
+        for i in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[i:i+1000]
+            
+            # Construir query com múltiplos OR (lote pequeno)
+            condicoes = []
+            for codigo, num in lote:
+                condicoes.append(f"(CODIGO_ATEND_A1 = {codigo} AND NUMEROFORMULA = {num})")
+            
+            cursor.execute(f"""
+                SELECT
+                    A2.CODIGO_ATEND_A1,
+                    A2.NUMEROFORMULA,
+                    A2.TEXTOROTULO,
+                    A2.POSOLOGIA,
+                    A2.VALORFORMULA_VENDA
+                FROM ATENDIMENTO_A2 A2
+                WHERE ({' OR '.join(condicoes)})
+            """)
+
+            formulas_faltantes = cursor.fetchall()
+
+            # Buscar pedidos
+            codigos_pedidos = list(set([row[0] for row in formulas_faltantes]))
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, codigos_pedidos))})'
+                },
+                timeout=30
+            )
+
+            cache_pedidos = {}
+            if response.status_code == 200:
+                for ped in response.json():
+                    cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+
+            # Preparar dados
+            formulas_dados = []
+            for row in formulas_faltantes:
+                codigo_atend, num_formula = row[0], row[1]
+                pedido_id = cache_pedidos.get(codigo_atend)
+                if not pedido_id:
+                    continue
+
+                formulas_dados.append({
+                    'pedido_id': pedido_id,
+                    'codigo_orcamento_original': codigo_atend,
+                    'numero_formula': num_formula,
+                    'descricao': limpar_string(row[2]),
+                    'posologia': limpar_string(row[3]),
+                    'valor_formula': float(row[4]) if row[4] else 0.0,
+                    'updated_at': datetime.now().isoformat()
+                })
+
+            if formulas_dados:
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                    headers=headers_insert,
+                    json=formulas_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    total_inseridos += len(formulas_dados)
+                    logger.info(f"   ✅ Lote {i//1000 + 1}: {len(formulas_dados)} fórmulas inseridas")
+
+        conn.close()
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} fórmulas faltantes sincronizadas'
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_formulas: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
+
+def sync_missing_rastreabilidade():
+    """Sincroniza rastreabilidade faltante (buracos)"""
+    try:
+        logger.info("🔍 Buscando rastreabilidade faltante...")
+
+        # Pegar todos códigos de rastreabilidade já no Supabase
+        todos_rastros_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade",
+                headers=headers,
+                params={
+                    'select': 'codigo_processo_original',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_processo_original.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_rastros_sb.extend([d['codigo_processo_original'] for d in dados])
+                offset += limit
+            else:
+                break
+
+        codigos_sb = set(todos_rastros_sb)
+        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
+
+        logger.info(f"   {len(codigos_sb)} registros já sincronizados (max: {max_codigo_sb})")
+
+        # Buscar todos registros do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM PROCESSO_MANIPULACAO
+            WHERE CODIGO <= {max_codigo_sb}
+            ORDER BY CODIGO
+        """)
+
+        todos_rastros_fb = [row[0] for row in cursor.fetchall()]
+        codigos_fb = set(todos_rastros_fb)
+
+        logger.info(f"   {len(codigos_fb)} registros no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = codigos_fb - codigos_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} registros FALTANTES identificados!")
+
+        # Buscar dados dos registros faltantes (em lotes de 1000)
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+
+        for i in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[i:i+1000]
+            codigos_str = ','.join(map(str, lote))
+
+            cursor.execute(f"""
+                SELECT
+                    PM.CODIGO,
+                    PM.TIPO_MOV,
+                    PM.CODIGO_MOV,
+                    PM.CODIGO_PROCESSO_TIPO,
+                    PM.CODIGO_FUNCIONARIO,
+                    PM.DATA_PROCESSO,
+                    PM.HORA_PROCESSO,
+                    PM.SEQUENCIA
+                FROM PROCESSO_MANIPULACAO PM
+                WHERE PM.CODIGO IN ({codigos_str})
+            """)
+
+            rastros_faltantes = cursor.fetchall()
+
+            # Buscar pedidos e tipos em lote
+            codigos_orcamento = list(set([row[2] for row in rastros_faltantes if row[2]]))
+            codigos_tipo = list(set([row[3] for row in rastros_faltantes if row[3]]))
+
+            cache_pedidos = {}
+            if codigos_orcamento:
+                response = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_orcamento_original',
+                        'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
+                    },
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    for ped in response.json():
+                        cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+
+            cache_tipos = {}
+            if codigos_tipo:
+                response = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prime_tipos_processo",
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_tipo_original',
+                        'codigo_tipo_original': f'in.({",".join(map(str, codigos_tipo))})'
+                    },
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    for tipo in response.json():
+                        cache_tipos[tipo['codigo_tipo_original']] = tipo['id']
+
+            # Preparar dados
+            rastros_dados = []
+            for row in rastros_faltantes:
+                codigo_orcamento = row[2]
+                codigo_tipo = row[3]
+
+                pedido_id = cache_pedidos.get(codigo_orcamento)
+                tipo_processo_id = cache_tipos.get(codigo_tipo)
+
+                if not pedido_id or not tipo_processo_id:
+                    continue
+
+                rastros_dados.append({
+                    'codigo_processo_original': row[0],
+                    'pedido_id': pedido_id,
+                    'codigo_orcamento_original': codigo_orcamento,
+                    'tipo_processo_id': tipo_processo_id,
+                    'codigo_tipo_original': codigo_tipo,
+                    'tipo_movimento': row[1],
+                    'codigo_funcionario': row[4],
+                    'data_processo': row[5].isoformat() if row[5] else None,
+                    'hora_processo': str(row[6]) if row[6] else None,
+                    'sequencia': row[7],
+                    'status_processo': 'CONCLUIDO',
+                    'updated_at': datetime.now().isoformat()
+                })
+
+            if rastros_dados:
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade",
+                    headers=headers_insert,
+                    json=rastros_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    total_inseridos += len(rastros_dados)
+                    logger.info(f"   ✅ Lote {i//1000 + 1}: {len(rastros_dados)} registros inseridos")
+
+        conn.close()
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} registros faltantes sincronizados'
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_rastreabilidade: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
+
 @app.route('/sync-missing', methods=['POST'])
 def sync_missing():
     """Endpoint para sincronizar registros faltantes"""
@@ -1724,6 +2046,19 @@ def sync():
             logger.info(f"📋 Fórmulas: {result_formulas}")
             if result_formulas.get('erro'):
                 logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar fórmulas faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("3️⃣.1 SINCRONIZANDO FÓRMULAS FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_formulas_missing = sync_missing_formulas()
+                if result_formulas_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Fórmulas faltantes sincronizadas: {result_formulas_missing}")
+                    result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + result_formulas_missing.get('inseridos', 0)
+                    result_formulas['faltantes_sincronizados'] = result_formulas_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes (continuando): {e}")
         except Exception as e:
             logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
             result_formulas = {'inseridos': 0, 'erro': str(e)}
@@ -1766,6 +2101,19 @@ def sync():
             logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
             if result_rastreabilidade.get('erro'):
                 logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar rastreabilidade faltante após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("6️⃣.1 SINCRONIZANDO RASTREABILIDADE FALTANTE (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_rastreabilidade_missing = sync_missing_rastreabilidade()
+                if result_rastreabilidade_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Rastreabilidade faltante sincronizada: {result_rastreabilidade_missing}")
+                    result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + result_rastreabilidade_missing.get('inseridos', 0)
+                    result_rastreabilidade['faltantes_sincronizados'] = result_rastreabilidade_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante (continuando): {e}")
         except Exception as e:
             logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
             result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
