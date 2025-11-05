@@ -115,312 +115,396 @@ def conectar_firebird():
     )
 
 def sync_clientes_novos():
-    """Sincroniza apenas clientes novos
+    """Sincroniza TODOS os clientes novos (SEM limitação)
     
     🚨 IMPORTANTE: Busca dados de 3 tabelas:
     1. CLIENTE (dados básicos)
     2. CADASTRO_TELEFONE (telefones - WHERE TIPO_CADASTRO = 1)
     3. CADASTRO_ENDERECO (endereços - WHERE TIPO_CADASTRO = 1)
+    
+    Processa em lotes de 1000 para evitar timeout
     """
     try:
         ultimo_codigo = get_ultimo_id_supabase('prime_clientes', 'codigo_cliente_original')
-        logger.info(f"📊 Clientes - Último código: {ultimo_codigo}")
+        logger.info(f"📊 Clientes - Último código no Supabase: {ultimo_codigo}")
 
         conn = conectar_firebird()
         cursor = conn.cursor()
         
-        # 1. Buscar clientes básicos
-        cursor.execute(f"""
-            SELECT 
-                C.CODIGO,
-                C.NOMECLIENTE,
-                C.CPF_CNPJ,
-                C.DIANASCIMENTO,
-                C.MESNASCIMENTO,
-                C.ANONASCIMENTO,
-                C.SEXO,
-                C.EMAIL1,
-                CE.NOMECIDADE,
-                CE.UF,
-                C.ATIVO
-            FROM CLIENTE C
-            LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
-            WHERE C.ATIVO = -1
-            AND C.CODIGO > {ultimo_codigo}
-            AND C.CODIGO < 500000
-            ORDER BY C.CODIGO
-            ROWS 1000
-        """)
-
-        novos_clientes = cursor.fetchall()
-
-        if not novos_clientes:
-            conn.close()
-            return {'inseridos': 0, 'mensagem': 'Nenhum cliente novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_clientes)} clientes novos")
+        # Processar em lotes de 1000 (sem limitação total)
+        batch_size = 1000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
         
-        # 2. Buscar telefones desses clientes (tabela CADASTRO_TELEFONE)
-        codigos = [row[0] for row in novos_clientes]
-        codigos_str = ','.join(map(str, codigos))
-        
-        cursor.execute(f"""
-            SELECT 
-                CT.CODIGO_CADASTRO,
-                CT.TELEFONEPREFIXO,
-                CT.TELEFONE
-            FROM CADASTRO_TELEFONE CT
-            WHERE CT.TIPO_CADASTRO = 1
-            AND CT.CODIGO_CADASTRO IN ({codigos_str})
-        """)
-        
-        telefones_dict = {}
-        for tel_row in cursor.fetchall():
-            codigo_cli = tel_row[0]
-            prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
-            numero = str(tel_row[2]).strip() if tel_row[2] else ""
-            telefone_completo = (prefixo + numero).strip() or None
+        while True:
+            logger.info(f"   🔄 Processando lote: códigos > {offset_codigo} (máximo {batch_size} por vez)")
             
-            if telefone_completo and codigo_cli not in telefones_dict:
-                telefones_dict[codigo_cli] = telefone_completo
-        
-        # 3. Buscar endereços desses clientes (tabela CADASTRO_ENDERECO)
-        cursor.execute(f"""
-            SELECT 
-                CE.CODIGO_CADASTRO,
-                CE.ENDERECO,
-                CE.NUMERO,
-                CE.CEP
-            FROM CADASTRO_ENDERECO CE
-            WHERE CE.TIPO_CADASTRO = 1
-            AND CE.CODIGO_CADASTRO IN ({codigos_str})
-        """)
-        
-        enderecos_dict = {}
-        for end_row in cursor.fetchall():
-            codigo_cli = end_row[0]
-            if codigo_cli not in enderecos_dict:
-                enderecos_dict[codigo_cli] = {
-                    'logradouro': end_row[1],
-                    'numero': end_row[2],
-                    'cep': end_row[3]
+            # 1. Buscar clientes básicos (lote)
+            cursor.execute(f"""
+                SELECT 
+                    C.CODIGO,
+                    C.NOMECLIENTE,
+                    C.CPF_CNPJ,
+                    C.DIANASCIMENTO,
+                    C.MESNASCIMENTO,
+                    C.ANONASCIMENTO,
+                    C.SEXO,
+                    C.EMAIL1,
+                    CE.NOMECIDADE,
+                    CE.UF,
+                    C.ATIVO
+                FROM CLIENTE C
+                LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
+                WHERE C.ATIVO = -1
+                AND C.CODIGO > {offset_codigo}
+                AND C.CODIGO < 500000
+                ORDER BY C.CODIGO
+                ROWS {batch_size}
+            """)
+
+            novos_clientes = cursor.fetchall()
+            
+            if not novos_clientes:
+                logger.info(f"   ✅ Nenhum cliente novo encontrado (lote completo)")
+                break
+            
+            logger.info(f"   📦 Lote atual: {len(novos_clientes)} clientes encontrados")
+
+            # Atualizar offset para próximo lote
+            offset_codigo = novos_clientes[-1][0]  # Último código do lote atual
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+            
+            # 2. Buscar telefones desses clientes (tabela CADASTRO_TELEFONE)
+            codigos = [row[0] for row in novos_clientes]
+            codigos_str = ','.join(map(str, codigos))
+            
+            try:
+                cursor.execute(f"""
+                    SELECT 
+                        CT.CODIGO_CADASTRO,
+                        CT.TELEFONEPREFIXO,
+                        CT.TELEFONE
+                    FROM CADASTRO_TELEFONE CT
+                    WHERE CT.TIPO_CADASTRO = 1
+                    AND CT.CODIGO_CADASTRO IN ({codigos_str})
+                """)
+                
+                telefones_dict = {}
+                for tel_row in cursor.fetchall():
+                    codigo_cli = tel_row[0]
+                    prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
+                    numero = str(tel_row[2]).strip() if tel_row[2] else ""
+                    telefone_completo = (prefixo + numero).strip() or None
+                    
+                    if telefone_completo and codigo_cli not in telefones_dict:
+                        telefones_dict[codigo_cli] = telefone_completo
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar telefones (lote {offset_codigo}): {e}", exc_info=True)
+                telefones_dict = {}
+            
+            # 3. Buscar endereços desses clientes (tabela CADASTRO_ENDERECO)
+            try:
+                cursor.execute(f"""
+                    SELECT 
+                        CE.CODIGO_CADASTRO,
+                        CE.ENDERECO,
+                        CE.NUMERO,
+                        CE.CEP
+                    FROM CADASTRO_ENDERECO CE
+                    WHERE CE.TIPO_CADASTRO = 1
+                    AND CE.CODIGO_CADASTRO IN ({codigos_str})
+                """)
+                
+                enderecos_dict = {}
+                for end_row in cursor.fetchall():
+                    codigo_cli = end_row[0]
+                    if codigo_cli not in enderecos_dict:
+                        enderecos_dict[codigo_cli] = {
+                            'logradouro': end_row[1],
+                            'numero': end_row[2],
+                            'cep': end_row[3]
+                        }
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar endereços (lote {offset_codigo}): {e}", exc_info=True)
+                enderecos_dict = {}
+            
+            # 4. Buscar totalizadores de pedidos (para calcular total_orcamentos, etc)
+            try:
+                cursor.execute(f"""
+                    SELECT 
+                        A.CODIGO_CLIENTE,
+                        COUNT(*) as total,
+                        COUNT(A.AVIADA_DT) as aprovados,
+                        COUNT(A.ENTREGUE_DT) as entregues,
+                        COALESCE(SUM(A.VALORVENDA), 0) as valor_total,
+                        COALESCE(SUM(CASE WHEN A.AVIADA_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_aprovado,
+                        COALESCE(SUM(CASE WHEN A.ENTREGUE_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_entregue,
+                        MIN(A.CADASTRO_DT) as primeira_compra,
+                        MAX(A.CADASTRO_DT) as ultima_compra
+                    FROM ATENDIMENTO_A1 A
+                    WHERE A.CODIGO_CLIENTE IN ({codigos_str})
+                    GROUP BY A.CODIGO_CLIENTE
+                """)
+                
+                totalizadores_dict = {}
+                for tot_row in cursor.fetchall():
+                    codigo_cli = tot_row[0]
+                    total = tot_row[1] or 1
+                    total_aprov = tot_row[2] or 1
+                    total_entreg = tot_row[3] or 1
+                    
+                    totalizadores_dict[codigo_cli] = {
+                        'total_orcamentos': tot_row[1] or 0,
+                        'total_orcamentos_aprovados': tot_row[2] or 0,
+                        'total_orcamentos_entregues': tot_row[3] or 0,
+                        'valor_total_orcamentos': float(tot_row[4]) if tot_row[4] else 0.0,
+                        'valor_total_aprovados': float(tot_row[5]) if tot_row[5] else 0.0,
+                        'valor_total_entregues': float(tot_row[6]) if tot_row[6] else 0.0,
+                        'valor_medio_orcamento': float(tot_row[4] / total) if tot_row[4] else 0.0,
+                        'valor_medio_aprovado': float(tot_row[5] / total_aprov) if tot_row[5] else 0.0,
+                        'valor_medio_entregue': float(tot_row[6] / total_entreg) if tot_row[6] else 0.0,
+                        'primeira_compra': tot_row[7].date().isoformat() if tot_row[7] else None,
+                        'ultima_compra': tot_row[8].date().isoformat() if tot_row[8] else None
+                    }
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar totalizadores (lote {offset_codigo}): {e}", exc_info=True)
+                totalizadores_dict = {}
+
+            # 5. Preparar dados combinando as 3 fontes
+            clientes_dados = []
+            for row in novos_clientes:
+                codigo_cliente = row[0]
+                
+                # Formatar data de nascimento
+                data_nasc = None
+                if row[3] and row[4] and row[5]:  # DIANASCIMENTO, MESNASCIMENTO, ANONASCIMENTO
+                    try:
+                        data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
+                    except Exception as e:
+                        logger.debug(f"   ⚠️  Erro ao formatar data nascimento cliente {codigo_cliente}: {e}")
+
+                # Buscar telefone da tabela CADASTRO_TELEFONE
+                telefone = telefones_dict.get(codigo_cliente)
+                
+                # Buscar endereço da tabela CADASTRO_ENDERECO
+                endereco = enderecos_dict.get(codigo_cliente, {})
+                
+                # Buscar totalizadores
+                totalizadores = totalizadores_dict.get(codigo_cliente, {})
+
+                # Montar cliente com TODOS os campos (mesmo que None)
+                cliente = {
+                    'codigo_cliente_original': codigo_cliente,
+                    'nome': limpar_string(row[1])[:255] if row[1] else None,
+                    'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
+                    'ativo': bool(row[10]) if row[10] is not None else True,
+                    'data_nascimento': data_nasc,
+                    'sexo': str(row[6])[:1] if row[6] else None,
+                    'email': limpar_string(row[7])[:255] if row[7] else None,
+                    'telefone': telefone,
+                    'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
+                    'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
+                    'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
+                    'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
+                    'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
+                    'total_orcamentos': totalizadores.get('total_orcamentos', 0),
+                    'total_orcamentos_aprovados': totalizadores.get('total_orcamentos_aprovados', 0),
+                    'total_orcamentos_entregues': totalizadores.get('total_orcamentos_entregues', 0),
+                    'valor_total_orcamentos': totalizadores.get('valor_total_orcamentos', 0.0),
+                    'valor_total_aprovados': totalizadores.get('valor_total_aprovados', 0.0),
+                    'valor_total_entregues': totalizadores.get('valor_total_entregues', 0.0),
+                    'valor_medio_orcamento': totalizadores.get('valor_medio_orcamento', 0.0),
+                    'valor_medio_aprovado': totalizadores.get('valor_medio_aprovado', 0.0),
+                    'valor_medio_entregue': totalizadores.get('valor_medio_entregue', 0.0),
+                    'primeira_compra': totalizadores.get('primeira_compra'),
+                    'ultima_compra': totalizadores.get('ultima_compra')
                 }
-        
-        # 4. Buscar totalizadores de pedidos (para calcular total_orcamentos, etc)
-        cursor.execute(f"""
-            SELECT 
-                A.CODIGO_CLIENTE,
-                COUNT(*) as total,
-                COUNT(A.AVIADA_DT) as aprovados,
-                COUNT(A.ENTREGUE_DT) as entregues,
-                COALESCE(SUM(A.VALORVENDA), 0) as valor_total,
-                COALESCE(SUM(CASE WHEN A.AVIADA_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_aprovado,
-                COALESCE(SUM(CASE WHEN A.ENTREGUE_DT IS NOT NULL THEN A.VALORVENDA ELSE 0 END), 0) as valor_entregue,
-                MIN(A.CADASTRO_DT) as primeira_compra,
-                MAX(A.CADASTRO_DT) as ultima_compra
-            FROM ATENDIMENTO_A1 A
-            WHERE A.CODIGO_CLIENTE IN ({codigos_str})
-            GROUP BY A.CODIGO_CLIENTE
-        """)
-        
-        totalizadores_dict = {}
-        for tot_row in cursor.fetchall():
-            codigo_cli = tot_row[0]
-            total = tot_row[1] or 1
-            total_aprov = tot_row[2] or 1
-            total_entreg = tot_row[3] or 1
-            
-            totalizadores_dict[codigo_cli] = {
-                'total_orcamentos': tot_row[1] or 0,
-                'total_orcamentos_aprovados': tot_row[2] or 0,
-                'total_orcamentos_entregues': tot_row[3] or 0,
-                'valor_total_orcamentos': float(tot_row[4]) if tot_row[4] else 0.0,
-                'valor_total_aprovados': float(tot_row[5]) if tot_row[5] else 0.0,
-                'valor_total_entregues': float(tot_row[6]) if tot_row[6] else 0.0,
-                'valor_medio_orcamento': float(tot_row[4] / total) if tot_row[4] else 0.0,
-                'valor_medio_aprovado': float(tot_row[5] / total_aprov) if tot_row[5] else 0.0,
-                'valor_medio_entregue': float(tot_row[6] / total_entreg) if tot_row[6] else 0.0,
-                'primeira_compra': tot_row[7].date().isoformat() if tot_row[7] else None,
-                'ultima_compra': tot_row[8].date().isoformat() if tot_row[8] else None
-            }
+                clientes_dados.append(cliente)
+
+            # 6. Inserir lote no Supabase
+            if clientes_dados:
+                try:
+                    url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
+                    response = requests.post(url, headers=headers, json=clientes_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(clientes_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"   ✅ Lote inserido: {lote_inseridos} clientes (Total: {total_inseridos})")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de clientes: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        logger.error(f"   Códigos do lote: {codigos[:10]}...")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de clientes (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
         
         conn.close()
-
-        # 4. Preparar dados combinando as 3 fontes
-        clientes_dados = []
-        for row in novos_clientes:
-            codigo_cliente = row[0]
-            
-            # Formatar data de nascimento
-            data_nasc = None
-            if row[3] and row[4] and row[5]:  # DIANASCIMENTO, MESNASCIMENTO, ANONASCIMENTO
-                try:
-                    data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
-                except:
-                    pass
-
-            # Buscar telefone da tabela CADASTRO_TELEFONE
-            telefone = telefones_dict.get(codigo_cliente)
-            
-            # Buscar endereço da tabela CADASTRO_ENDERECO
-            endereco = enderecos_dict.get(codigo_cliente, {})
-            
-            # Buscar totalizadores
-            totalizadores = totalizadores_dict.get(codigo_cliente, {})
-
-            # Montar cliente com TODOS os campos (mesmo que None)
-            # IMPORTANTE: Todos os objetos devem ter as mesmas chaves para evitar erro PGRST102
-            cliente = {
-                'codigo_cliente_original': codigo_cliente,
-                'nome': limpar_string(row[1])[:255] if row[1] else None,
-                'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
-                'ativo': bool(row[10]) if row[10] is not None else True,
-                'data_nascimento': data_nasc,  # Sempre presente (pode ser None)
-                'sexo': str(row[6])[:1] if row[6] else None,
-                'email': limpar_string(row[7])[:255] if row[7] else None,
-                'telefone': telefone,  # Da tabela CADASTRO_TELEFONE
-                'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
-                'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
-                'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
-                'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
-                'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
-                # Totalizadores de pedidos
-                'total_orcamentos': totalizadores.get('total_orcamentos', 0),
-                'total_orcamentos_aprovados': totalizadores.get('total_orcamentos_aprovados', 0),
-                'total_orcamentos_entregues': totalizadores.get('total_orcamentos_entregues', 0),
-                'valor_total_orcamentos': totalizadores.get('valor_total_orcamentos', 0.0),
-                'valor_total_aprovados': totalizadores.get('valor_total_aprovados', 0.0),
-                'valor_total_entregues': totalizadores.get('valor_total_entregues', 0.0),
-                'valor_medio_orcamento': totalizadores.get('valor_medio_orcamento', 0.0),
-                'valor_medio_aprovado': totalizadores.get('valor_medio_aprovado', 0.0),
-                'valor_medio_entregue': totalizadores.get('valor_medio_entregue', 0.0),
-                'primeira_compra': totalizadores.get('primeira_compra'),
-                'ultima_compra': totalizadores.get('ultima_compra')
-            }
-            clientes_dados.append(cliente)
-
-        # 5. Inserir no Supabase
-        url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-        response = requests.post(url, headers=headers, json=clientes_dados, timeout=30)
-
-        if response.status_code in [200, 201]:
-            logger.info(f"✅ {len(clientes_dados)} clientes sincronizados COM telefones e endereços das tabelas relacionadas")
+        
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} clientes sincronizados (processados em lotes)")
             return {
-                'inseridos': len(clientes_dados),
-                'mensagem': f'{len(clientes_dados)} clientes sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} clientes sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir clientes: {response.status_code} - {response.text[:200]}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum cliente novo sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_clientes_novos: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_clientes_novos: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_pedidos_novos():
-    """Sincroniza apenas pedidos novos"""
+    """Sincroniza TODOS os pedidos novos (SEM limitação - processa em lotes)"""
     try:
         ultimo_codigo = get_ultimo_id_supabase('prime_pedidos', 'codigo_orcamento_original')
-        logger.info(f"📊 Pedidos - Último código: {ultimo_codigo}")
+        logger.info(f"📊 Pedidos - Último código no Supabase: {ultimo_codigo}")
 
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                A.CODIGO,
-                A.CODIGO_CLIENTE,
-                A.CADASTRO_DT,
-                A.AVIADA_DT,
-                A.ENTREGUE_DT,
-                A.VALORVENDA,
-                A.OBSERVACAO
-            FROM ATENDIMENTO_A1 A
-            WHERE A.CODIGO_CLIENTE IS NOT NULL
-            AND A.CODIGO > {ultimo_codigo}
-            ORDER BY A.CODIGO
-            ROWS 5000
-        """)
+        
+        # Processar em lotes de 2000 (sem limitação total)
+        batch_size = 2000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
+        
+        while True:
+            logger.info(f"   🔄 Processando lote de pedidos: códigos > {offset_codigo} (máximo {batch_size} por vez)")
+            
+            cursor.execute(f"""
+                SELECT
+                    A.CODIGO,
+                    A.CODIGO_CLIENTE,
+                    A.CADASTRO_DT,
+                    A.AVIADA_DT,
+                    A.ENTREGUE_DT,
+                    A.VALORVENDA,
+                    A.OBSERVACAO
+                FROM ATENDIMENTO_A1 A
+                WHERE A.CODIGO_CLIENTE IS NOT NULL
+                AND A.CODIGO > {offset_codigo}
+                ORDER BY A.CODIGO
+                ROWS {batch_size}
+            """)
 
-        novos_pedidos = cursor.fetchall()
+            novos_pedidos = cursor.fetchall()
+            
+            if not novos_pedidos:
+                logger.info(f"   ✅ Nenhum pedido novo encontrado (lote completo)")
+                break
+            
+            logger.info(f"   📦 Lote atual: {len(novos_pedidos)} pedidos encontrados")
+            
+            # Atualizar offset para próximo lote
+            offset_codigo = novos_pedidos[-1][0]
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+
+            # Buscar clientes em lote
+            try:
+                codigos_cliente = list(set([row[1] for row in novos_pedidos]))
+                url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
+                response = requests.get(
+                    url_clientes,
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_cliente_original',
+                        'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+                    },
+                    timeout=30
+                )
+
+                cache_clientes = {}
+                if response.status_code == 200:
+                    for cli in response.json():
+                        cache_clientes[cli['codigo_cliente_original']] = cli['id']
+                else:
+                    logger.error(f"❌ Erro ao buscar clientes: {response.status_code} - {response.text[:200]}")
+                    cache_clientes = {}
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar clientes (lote {offset_codigo}): {e}", exc_info=True)
+                cache_clientes = {}
+
+            pedidos_dados = []
+            pedidos_sem_cliente = []
+            for row in novos_pedidos:
+                codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
+
+                cliente_id = cache_clientes.get(codigo_cliente)
+                if not cliente_id:
+                    pedidos_sem_cliente.append(codigo_orcamento)
+                    continue
+
+                status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
+                status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
+
+                if entregue_dt:
+                    status_geral = 'ENTREGUE'
+                elif aviada_dt:
+                    status_geral = 'APROVADO'
+                else:
+                    status_geral = 'PENDENTE'
+
+                pedido = {
+                    'codigo_orcamento_original': codigo_orcamento,
+                    'codigo_cliente_original': codigo_cliente,
+                    'cliente_id': cliente_id,
+                    'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
+                    'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
+                    'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
+                    'valor_total': float(valor_venda) if valor_venda else 0.0,
+                    'observacoes': limpar_string(observacao),
+                    'status_aprovacao': status_aprovacao,
+                    'status_entrega': status_entrega,
+                    'status_geral': status_geral
+                }
+                pedidos_dados.append(pedido)
+
+            if pedidos_sem_cliente:
+                logger.warning(f"   ⚠️  {len(pedidos_sem_cliente)} pedidos sem cliente no Supabase (pulados): {pedidos_sem_cliente[:10]}{'...' if len(pedidos_sem_cliente) > 10 else ''}")
+
+            # Inserir lote no Supabase
+            if pedidos_dados:
+                try:
+                    url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+                    response = requests.post(url, headers=headers, json=pedidos_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(pedidos_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"   ✅ Lote inserido: {lote_inseridos} pedidos (Total: {total_inseridos})")
+                        if pedidos_sem_cliente:
+                            logger.warning(f"   ⚠️  {len(pedidos_sem_cliente)} pedidos NÃO inseridos neste lote (sem cliente)")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de pedidos: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        logger.error(f"   Códigos do lote: {[row[0] for row in novos_pedidos[:10]]}...")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de pedidos (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
+        
         conn.close()
-
-        if not novos_pedidos:
-            return {'inseridos': 0, 'mensagem': 'Nenhum pedido novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_pedidos)} pedidos novos")
-
-        # Buscar clientes em lote
-        codigos_cliente = list(set([row[1] for row in novos_pedidos]))
-        url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-        response = requests.get(
-            url_clientes,
-            headers=headers,
-            params={
-                'select': 'id,codigo_cliente_original',
-                'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
-            },
-            timeout=30
-        )
-
-        cache_clientes = {}
-        if response.status_code == 200:
-            for cli in response.json():
-                cache_clientes[cli['codigo_cliente_original']] = cli['id']
-
-        pedidos_dados = []
-        for row in novos_pedidos:
-            codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
-
-            cliente_id = cache_clientes.get(codigo_cliente)
-            if not cliente_id:
-                continue
-
-            status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
-            status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
-
-            if entregue_dt:
-                status_geral = 'ENTREGUE'
-            elif aviada_dt:
-                status_geral = 'APROVADO'
-            else:
-                status_geral = 'PENDENTE'
-
-            pedido = {
-                'codigo_orcamento_original': codigo_orcamento,
-                'codigo_cliente_original': codigo_cliente,
-                'cliente_id': cliente_id,
-                'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
-                'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
-                'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
-                'valor_total': float(valor_venda) if valor_venda else 0.0,
-                'observacoes': limpar_string(observacao),
-                'status_aprovacao': status_aprovacao,
-                'status_entrega': status_entrega,
-                'status_geral': status_geral
-            }
-            pedidos_dados.append(pedido)
-
-        if not pedidos_dados:
-            return {'inseridos': 0, 'mensagem': 'Pedidos sem clientes correspondentes'}
-
-        url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-        response = requests.post(url, headers=headers, json=pedidos_dados, timeout=30)
-
-        if response.status_code in [200, 201]:
+        
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} pedidos sincronizados (processados em lotes)")
             return {
-                'inseridos': len(pedidos_dados),
-                'mensagem': f'{len(pedidos_dados)} pedidos sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} pedidos sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir pedidos: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum pedido novo sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_pedidos_novos: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_pedidos_novos: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_formulas_novas():
-    """Sincroniza fórmulas novas com TEXTOROTULO"""
+    """Sincroniza TODAS as fórmulas novas (SEM limitação - processa em lotes)"""
     try:
         # Buscar último código de fórmula baseado no pedido
         url_formulas = f"{SUPABASE_URL}/rest/v1/prime_formulas"
@@ -441,87 +525,131 @@ def sync_formulas_novas():
             if dados:
                 ultimo_codigo = dados[0]['codigo_orcamento_original']
 
-        logger.info(f"📊 Fórmulas - Último código atendimento: {ultimo_codigo}")
+        logger.info(f"📊 Fórmulas - Último código atendimento no Supabase: {ultimo_codigo}")
 
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                A2.CODIGO_ATEND_A1,
-                A2.NUMEROFORMULA,
-                A2.TEXTOROTULO,
-                A2.POSOLOGIA,
-                A2.VALORFORMULA_VENDA
-            FROM ATENDIMENTO_A2 A2
-            WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
-            AND A2.CODIGO_ATEND_A1 IS NOT NULL
-            ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
-            ROWS 5000
-        """)
+        
+        # Processar em lotes de 2000 (sem limitação total)
+        batch_size = 2000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
+        
+        while True:
+            logger.info(f"   🔄 Processando lote de fórmulas: códigos > {offset_codigo} (máximo {batch_size} por vez)")
+            
+            cursor.execute(f"""
+                SELECT
+                    A2.CODIGO_ATEND_A1,
+                    A2.NUMEROFORMULA,
+                    A2.TEXTOROTULO,
+                    A2.POSOLOGIA,
+                    A2.VALORFORMULA_VENDA
+                FROM ATENDIMENTO_A2 A2
+                WHERE A2.CODIGO_ATEND_A1 > {offset_codigo}
+                AND A2.CODIGO_ATEND_A1 IS NOT NULL
+                ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
+                ROWS {batch_size}
+            """)
 
-        novas_formulas = cursor.fetchall()
+            novas_formulas = cursor.fetchall()
+            
+            if not novas_formulas:
+                logger.info(f"   ✅ Nenhuma fórmula nova encontrada (lote completo)")
+                break
+            
+            logger.info(f"   📦 Lote atual: {len(novas_formulas)} fórmulas encontradas")
+            
+            # Atualizar offset para próximo lote
+            offset_codigo = novas_formulas[-1][0]  # Último CODIGO_ATEND_A1 do lote
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+
+            # Buscar pedidos em lote
+            try:
+                codigos_orcamento = list(set([row[0] for row in novas_formulas]))
+                url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+                response = requests.get(
+                    url_pedidos,
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_orcamento_original',
+                        'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
+                    },
+                    timeout=30
+                )
+
+                cache_pedidos = {}
+                if response.status_code == 200:
+                    for ped in response.json():
+                        cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+                else:
+                    logger.error(f"❌ Erro ao buscar pedidos: {response.status_code} - {response.text[:200]}")
+                    cache_pedidos = {}
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar pedidos (lote {offset_codigo}): {e}", exc_info=True)
+                cache_pedidos = {}
+
+            formulas_dados = []
+            formulas_sem_pedido = []
+            for row in novas_formulas:
+                codigo_atend, num_formula, texto_rotulo, posologia, valor = row
+
+                pedido_id = cache_pedidos.get(codigo_atend)
+                if not pedido_id:
+                    formulas_sem_pedido.append(codigo_atend)
+                    continue
+
+                formula = {
+                    'pedido_id': pedido_id,
+                    'codigo_orcamento_original': codigo_atend,
+                    'numero_formula': num_formula,
+                    'descricao': limpar_string(texto_rotulo),  # TEXTOROTULO completo!
+                    'posologia': limpar_string(posologia),
+                    'valor_formula': float(valor) if valor else 0.0,
+                    'updated_at': datetime.now().isoformat()
+                }
+                formulas_dados.append(formula)
+
+            if formulas_sem_pedido:
+                logger.warning(f"   ⚠️  {len(set(formulas_sem_pedido))} pedidos não encontrados no Supabase (fórmulas puladas): {list(set(formulas_sem_pedido))[:10]}{'...' if len(set(formulas_sem_pedido)) > 10 else ''}")
+
+            # Inserir lote no Supabase
+            if formulas_dados:
+                try:
+                    url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
+                    response = requests.post(url, headers=headers, json=formulas_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(formulas_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"   ✅ Lote inserido: {lote_inseridos} fórmulas (Total: {total_inseridos})")
+                        if formulas_sem_pedido:
+                            logger.warning(f"   ⚠️  {len(set(formulas_sem_pedido))} fórmulas NÃO inseridas neste lote (sem pedido)")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de fórmulas: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        logger.error(f"   Códigos do lote: {codigos_orcamento[:10]}...")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de fórmulas (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
+        
         conn.close()
-
-        if not novas_formulas:
-            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula nova'}
-
-        logger.info(f"✅ Encontradas {len(novas_formulas)} fórmulas novas")
-
-        # Buscar pedidos em lote
-        codigos_orcamento = list(set([row[0] for row in novas_formulas]))
-        url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-        response = requests.get(
-            url_pedidos,
-            headers=headers,
-            params={
-                'select': 'id,codigo_orcamento_original',
-                'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
-            },
-            timeout=30
-        )
-
-        cache_pedidos = {}
-        if response.status_code == 200:
-            for ped in response.json():
-                cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
-
-        formulas_dados = []
-        for row in novas_formulas:
-            codigo_atend, num_formula, texto_rotulo, posologia, valor = row
-
-            pedido_id = cache_pedidos.get(codigo_atend)
-            if not pedido_id:
-                continue
-
-            formula = {
-                'pedido_id': pedido_id,
-                'codigo_orcamento_original': codigo_atend,
-                'numero_formula': num_formula,
-                'descricao': limpar_string(texto_rotulo),  # TEXTOROTULO completo!
-                'posologia': limpar_string(posologia),
-                'valor_formula': float(valor) if valor else 0.0,
-                'updated_at': datetime.now().isoformat()
-            }
-            formulas_dados.append(formula)
-
-        if not formulas_dados:
-            return {'inseridos': 0, 'mensagem': 'Fórmulas sem pedidos correspondentes'}
-
-        url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
-        response = requests.post(url, headers=headers, json=formulas_dados, timeout=60)
-
-        if response.status_code in [200, 201]:
+        
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} fórmulas sincronizadas (processadas em lotes)")
             return {
-                'inseridos': len(formulas_dados),
-                'mensagem': f'{len(formulas_dados)} fórmulas sincronizadas'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} fórmulas sincronizadas'
             }
         else:
-            logger.error(f"❌ Erro ao inserir fórmulas: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula nova sincronizada'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_formulas_novas: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_formulas_novas: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_formulas_itens_novos():
     """Sincroniza itens das fórmulas (ATENDIMENTO_A3) - NOVA FUNCIONALIDADE"""
@@ -569,116 +697,157 @@ def sync_formulas_itens_novos():
 
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                A3.CODIGO_ATEND_A1,
-                A3.NUMEROFORMULA,
-                A3.NUMEROLINHA,
-                A3.CODIGO_PRODUTO,
-                EG.NOMEPRODUTO,
-                A3.QUANTIDADE,
-                A3.UNIDADE,
-                A3.VALORCUSTO,
-                A3.VALORVENDA,
-                A3.OBSERVACAO
-            FROM ATENDIMENTO_A3 A3
-            LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
-            WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
-            AND A3.CODIGO_ATEND_A1 IS NOT NULL
-            ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
-            ROWS 5000
-        """)
+        # Processar em lotes de 2000 (sem limitação total)
+        batch_size = 2000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
+        
+        while True:
+            logger.info(f"   🔄 Processando lote de itens: códigos > {offset_codigo} (máximo {batch_size} por vez)")
+            
+            cursor.execute(f"""
+                SELECT
+                    A3.CODIGO_ATEND_A1,
+                    A3.NUMEROFORMULA,
+                    A3.NUMEROLINHA,
+                    A3.CODIGO_PRODUTO,
+                    EG.NOMEPRODUTO,
+                    A3.QUANTIDADE,
+                    A3.UNIDADE,
+                    A3.VALORCUSTO,
+                    A3.VALORVENDA,
+                    A3.OBSERVACAO
+                FROM ATENDIMENTO_A3 A3
+                LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
+                WHERE A3.CODIGO_ATEND_A1 > {offset_codigo}
+                AND A3.CODIGO_ATEND_A1 IS NOT NULL
+                ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
+                ROWS {batch_size}
+            """)
 
-        novos_itens = cursor.fetchall()
-        conn.close()
-
-        if not novos_itens:
-            return {'inseridos': 0, 'mensagem': 'Nenhum item novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_itens)} itens novos")
-
-        # Montar cache COMPLETO de fórmulas com paginação (corrigido 28/10/2025)
-        logger.info("   Montando cache de fórmulas...")
-        cache_formulas = {}
-        offset = 0
-        while offset < 50000:  # Max 50k fórmulas
-            response = requests.get(
-                f"{SUPABASE_URL}/rest/v1/prime_formulas",
-                headers=headers,
-                params={
-                    'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
-                    'limit': 1000,
-                    'offset': offset
-                },
-                timeout=10
-            )
-            if response.status_code == 200:
-                dados = response.json()
-                if not dados:
-                    break
-                for formula in dados:
-                    chave = (formula['codigo_orcamento_original'], formula['numero_formula'])
-                    cache_formulas[chave] = {'id': formula['id'], 'pedido_id': formula['pedido_id']}
-                offset += 1000
-            else:
+            novos_itens = cursor.fetchall()
+            
+            if not novos_itens:
+                logger.info(f"   ✅ Nenhum item novo encontrado (lote completo)")
                 break
+            
+            logger.info(f"   📦 Lote atual: {len(novos_itens)} itens encontrados")
+            
+            # Atualizar offset para próximo lote
+            offset_codigo = novos_itens[-1][0]  # Último CODIGO_ATEND_A1 do lote
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+
+            # Montar cache COMPLETO de fórmulas com paginação (sem limitação)
+            logger.info("      Montando cache de fórmulas...")
+            cache_formulas = {}
+            offset = 0
+            while True:  # Sem limitação - processa TODAS as fórmulas
+                try:
+                    response = requests.get(
+                        f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                        headers=headers,
+                        params={
+                            'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                            'limit': 1000,
+                            'offset': offset
+                        },
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        dados = response.json()
+                        if not dados:
+                            break
+                        for formula in dados:
+                            chave = (formula['codigo_orcamento_original'], formula['numero_formula'])
+                            cache_formulas[chave] = {'id': formula['id'], 'pedido_id': formula['pedido_id']}
+                        offset += 1000
+                        if len(dados) < 1000:
+                            break
+                    else:
+                        logger.error(f"❌ Erro ao buscar fórmulas (offset {offset}): {response.status_code}")
+                        break
+                except Exception as e:
+                    logger.error(f"❌ Erro ao buscar fórmulas (offset {offset}): {e}", exc_info=True)
+                    break
+            
+            logger.info(f"      Cache fórmulas: {len(cache_formulas)} carregadas")
+
+            itens_dados = []
+            itens_sem_formula = []
+            for row in novos_itens:
+                (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
+                 quantidade, unidade, valor_custo, valor_venda, observacao) = row
+
+                chave = (codigo_atend, num_formula)
+                formula_info = cache_formulas.get(chave)
+
+                if not formula_info:
+                    itens_sem_formula.append(chave)
+                    continue
+
+                item = {
+                    'formula_id': formula_info['id'],
+                    'pedido_id': formula_info['pedido_id'],
+                    'codigo_atendimento_original': codigo_atend,
+                    'numero_formula': num_formula,
+                    'numero_linha': num_linha,
+                    'codigo_produto': codigo_produto,
+                    'nome_produto': limpar_string(nome_produto) or 'PRODUTO NÃO IDENTIFICADO',
+                    'quantidade': float(quantidade) if quantidade else None,
+                    'unidade': limpar_string(unidade),
+                    'quantidade_calculo': float(quantidade) if quantidade else None,
+                    'valor_custo': float(valor_custo) if valor_custo else 0.0,
+                    'valor_venda': float(valor_venda) if valor_venda else 0.0,
+                    'valor_venda_desconto': 0.0,
+                    'inclusao_sistema': True,
+                    'visualizar_produto': True,
+                    'observacao': limpar_string(observacao),
+                    'updated_at': datetime.now().isoformat()
+                }
+                itens_dados.append(item)
+
+            if itens_sem_formula:
+                logger.warning(f"      ⚠️  {len(set(itens_sem_formula))} itens sem fórmula no Supabase (pulados)")
+
+            # Inserir lote no Supabase
+            if itens_dados:
+                try:
+                    headers_insert = headers.copy()
+                    headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                    
+                    url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
+                    response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(itens_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"      ✅ Lote inserido: {lote_inseridos} itens (Total: {total_inseridos})")
+                        if itens_sem_formula:
+                            logger.warning(f"      ⚠️  {len(set(itens_sem_formula))} itens NÃO inseridos neste lote (sem fórmula)")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de itens: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de itens (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
         
-        logger.info(f"   Cache fórmulas: {len(cache_formulas)} carregadas")
-
-        itens_dados = []
-        for row in novos_itens:
-            (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
-             quantidade, unidade, valor_custo, valor_venda, observacao) = row
-
-            chave = (codigo_atend, num_formula)
-            formula_info = cache_formulas.get(chave)
-
-            if not formula_info:
-                continue
-
-            item = {
-                'formula_id': formula_info['id'],
-                'pedido_id': formula_info['pedido_id'],
-                'codigo_atendimento_original': codigo_atend,
-                'numero_formula': num_formula,
-                'numero_linha': num_linha,
-                'codigo_produto': codigo_produto,
-                'nome_produto': limpar_string(nome_produto) or 'PRODUTO NÃO IDENTIFICADO',
-                'quantidade': float(quantidade) if quantidade else None,
-                'unidade': limpar_string(unidade),
-                'quantidade_calculo': float(quantidade) if quantidade else None,
-                'valor_custo': float(valor_custo) if valor_custo else 0.0,
-                'valor_venda': float(valor_venda) if valor_venda else 0.0,
-                'valor_venda_desconto': 0.0,
-                'inclusao_sistema': True,
-                'visualizar_produto': True,
-                'observacao': limpar_string(observacao),
-                'updated_at': datetime.now().isoformat()
-            }
-            itens_dados.append(item)
-
-        if not itens_dados:
-            return {'inseridos': 0, 'mensagem': 'Itens sem fórmulas correspondentes'}
-
-        # Headers com ignore-duplicates (corrigido 28/10/2025)
-        headers_insert = headers.copy()
-        headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+        conn.close()
         
-        url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
-        response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
-
-        if response.status_code in [200, 201]:
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} itens sincronizados (processados em lotes)")
             return {
-                'inseridos': len(itens_dados),
-                'mensagem': f'{len(itens_dados)} itens sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} itens sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir itens: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum item novo sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_formulas_itens_novos: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_formulas_itens_novos: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_rastreabilidade_nova():
     """Sincroniza rastreabilidade nova (ATENDIMENTO_A2.CONTROLERASTREABILIDADE)"""
@@ -714,100 +883,177 @@ def sync_rastreabilidade_nova():
 
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                PM.CODIGO,
-                PM.TIPO_MOV,
-                PM.CODIGO_MOV,
-                PM.CODIGO_PROCESSO_TIPO,
-                PM.CODIGO_FUNCIONARIO,
-                PM.DATA_PROCESSO,
-                PM.HORA_PROCESSO,
-                PM.SEQUENCIA
-            FROM PROCESSO_MANIPULACAO PM
-            WHERE PM.CODIGO > {ultimo_codigo}
-            ORDER BY PM.CODIGO
-            ROWS 1000
-        """)
+        
+        # Processar em lotes de 2000 (sem limitação total)
+        batch_size = 2000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
+        
+        while True:
+            logger.info(f"   🔄 Processando lote de rastreabilidade: códigos > {offset_codigo} (máximo {batch_size} por vez)")
+            
+            cursor.execute(f"""
+                SELECT
+                    PM.CODIGO,
+                    PM.TIPO_MOV,
+                    PM.CODIGO_MOV,
+                    PM.CODIGO_PROCESSO_TIPO,
+                    PM.CODIGO_FUNCIONARIO,
+                    PM.DATA_PROCESSO,
+                    PM.HORA_PROCESSO,
+                    PM.SEQUENCIA
+                FROM PROCESSO_MANIPULACAO PM
+                WHERE PM.CODIGO > {offset_codigo}
+                ORDER BY PM.CODIGO
+                ROWS {batch_size}
+            """)
 
-        novos_registros = cursor.fetchall()
+            novos_registros = cursor.fetchall()
+            
+            if not novos_registros:
+                logger.info(f"   ✅ Nenhum registro novo encontrado (lote completo)")
+                break
+            
+            logger.info(f"   📦 Lote atual: {len(novos_registros)} registros encontrados")
+            
+            # Atualizar offset para próximo lote
+            offset_codigo = novos_registros[-1][0]  # Último CODIGO do lote
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+
+            # Preparar dados com lookup de IDs
+            rastreabilidade_dados = []
+            pedidos_nao_encontrados = []
+            tipos_nao_encontrados = []
+            
+            # Buscar pedidos e tipos em lote (mais eficiente)
+            codigos_orcamento = list(set([row[2] for row in novos_registros if row[2]]))
+            codigos_tipo = list(set([row[3] for row in novos_registros if row[3]]))
+            
+            # Cache de pedidos
+            cache_pedidos = {}
+            try:
+                if codigos_orcamento:
+                    url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+                    resp_pedido = requests.get(
+                        url_pedido,
+                        headers=headers,
+                        params={
+                            'select': 'id,codigo_orcamento_original',
+                            'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
+                        },
+                        timeout=30
+                    )
+                    
+                    if resp_pedido.status_code == 200:
+                        for ped in resp_pedido.json():
+                            cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+                    else:
+                        logger.error(f"❌ Erro ao buscar pedidos em lote: {resp_pedido.status_code} - {resp_pedido.text[:200]}")
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar pedidos em lote (lote {offset_codigo}): {e}", exc_info=True)
+            
+            # Cache de tipos de processo
+            cache_tipos = {}
+            try:
+                if codigos_tipo:
+                    url_tipo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+                    resp_tipo = requests.get(
+                        url_tipo,
+                        headers=headers,
+                        params={
+                            'select': 'id,codigo_tipo_original',
+                            'codigo_tipo_original': f'in.({",".join(map(str, codigos_tipo))})'
+                        },
+                        timeout=30
+                    )
+                    
+                    if resp_tipo.status_code == 200:
+                        for tipo in resp_tipo.json():
+                            cache_tipos[tipo['codigo_tipo_original']] = tipo['id']
+                    else:
+                        logger.error(f"❌ Erro ao buscar tipos em lote: {resp_tipo.status_code} - {resp_tipo.text[:200]}")
+            except Exception as e:
+                logger.error(f"❌ Erro ao buscar tipos em lote (lote {offset_codigo}): {e}", exc_info=True)
+            
+            # Processar registros do lote
+            for row in novos_registros:
+                codigo_orcamento = row[2]
+                codigo_tipo = row[3]
+
+                pedido_id = cache_pedidos.get(codigo_orcamento)
+                if not pedido_id:
+                    if codigo_orcamento not in pedidos_nao_encontrados:
+                        pedidos_nao_encontrados.append(codigo_orcamento)
+                    continue
+
+                tipo_processo_id = cache_tipos.get(codigo_tipo)
+                if not tipo_processo_id:
+                    if codigo_tipo not in tipos_nao_encontrados:
+                        tipos_nao_encontrados.append(codigo_tipo)
+                    continue
+
+                rastro = {
+                    'codigo_processo_original': row[0],
+                    'pedido_id': pedido_id,
+                    'codigo_orcamento_original': codigo_orcamento,
+                    'tipo_processo_id': tipo_processo_id,
+                    'codigo_tipo_original': codigo_tipo,
+                    'tipo_movimento': row[1],
+                    'codigo_funcionario': row[4],
+                    'data_processo': row[5].isoformat() if row[5] else None,
+                    'hora_processo': str(row[6]) if row[6] else None,
+                    'sequencia': row[7],
+                    'status_processo': 'CONCLUIDO',
+                    'updated_at': datetime.now().isoformat()
+                }
+                rastreabilidade_dados.append(rastro)
+
+            # Logging detalhado sobre pedidos/tipos não encontrados
+            if pedidos_nao_encontrados:
+                logger.warning(f"   ⚠️  {len(set(pedidos_nao_encontrados))} pedidos NÃO encontrados no Supabase (rastreabilidade pulada)")
+                logger.warning(f"      Pedidos: {list(set(pedidos_nao_encontrados))[:10]}{'...' if len(set(pedidos_nao_encontrados)) > 10 else ''}")
+            
+            if tipos_nao_encontrados:
+                logger.warning(f"   ⚠️  {len(set(tipos_nao_encontrados))} tipos de processo NÃO encontrados no Supabase (rastreabilidade pulada)")
+                logger.warning(f"      Tipos: {list(set(tipos_nao_encontrados))[:10]}{'...' if len(set(tipos_nao_encontrados)) > 10 else ''}")
+
+            # Inserir lote no Supabase
+            if rastreabilidade_dados:
+                try:
+                    url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
+                    response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(rastreabilidade_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"   ✅ Lote inserido: {lote_inseridos} registros (Total: {total_inseridos})")
+                        if pedidos_nao_encontrados or tipos_nao_encontrados:
+                            logger.warning(f"   ⚠️  {len(set(pedidos_nao_encontrados))} pedidos + {len(set(tipos_nao_encontrados))} tipos NÃO encontrados neste lote")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de rastreabilidade: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        logger.error(f"   Códigos do lote: {[row[0] for row in novos_registros[:10]]}...")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de rastreabilidade (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
+        
         conn.close()
-
-        if not novos_registros:
-            return {'inseridos': 0, 'mensagem': 'Nenhum registro novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_registros)} registros novos")
-
-        # Preparar dados com lookup de IDs
-        rastreabilidade_dados = []
-        for row in novos_registros:
-            codigo_orcamento = row[2]
-            codigo_tipo = row[3]
-
-            # Buscar pedido_id no Supabase
-            url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-            resp_pedido = requests.get(
-                url_pedido,
-                headers=headers,
-                params={'select': 'id', 'codigo_orcamento_original': f'eq.{codigo_orcamento}', 'limit': 1},
-                timeout=10
-            )
-
-            if resp_pedido.status_code != 200 or not resp_pedido.json():
-                logger.warning(f"⚠️ Pedido {codigo_orcamento} não encontrado no Supabase, pulando...")
-                continue
-
-            pedido_id = resp_pedido.json()[0]['id']
-
-            # Buscar tipo_processo_id no Supabase
-            url_tipo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
-            resp_tipo = requests.get(
-                url_tipo,
-                headers=headers,
-                params={'select': 'id', 'codigo_tipo_original': f'eq.{codigo_tipo}', 'limit': 1},
-                timeout=10
-            )
-
-            if resp_tipo.status_code != 200 or not resp_tipo.json():
-                logger.warning(f"⚠️ Tipo de processo {codigo_tipo} não encontrado no Supabase, pulando...")
-                continue
-
-            tipo_processo_id = resp_tipo.json()[0]['id']
-
-            rastro = {
-                'codigo_processo_original': row[0],
-                'pedido_id': pedido_id,
-                'codigo_orcamento_original': codigo_orcamento,
-                'tipo_processo_id': tipo_processo_id,
-                'codigo_tipo_original': codigo_tipo,
-                'tipo_movimento': row[1],
-                'codigo_funcionario': row[4],
-                'data_processo': row[5].isoformat() if row[5] else None,
-                'hora_processo': str(row[6]) if row[6] else None,
-                'sequencia': row[7],
-                'status_processo': 'CONCLUIDO',
-                'updated_at': datetime.now().isoformat()
-            }
-            rastreabilidade_dados.append(rastro)
-
-        if not rastreabilidade_dados:
-            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido'}
-
-        url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
-        response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
-
-        if response.status_code in [200, 201]:
+        
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} registros de rastreabilidade sincronizados (processados em lotes)")
             return {
-                'inseridos': len(rastreabilidade_dados),
-                'mensagem': f'{len(rastreabilidade_dados)} registros sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} registros sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir rastreabilidade: {response.status_code} - {response.text}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro novo sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_rastreabilidade_nova: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_rastreabilidade_nova: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_tipos_processo_novos():
     """Sincroniza tipos de processo (ATENDIMENTO_A1.TIPODEPROCESSO)"""
@@ -843,84 +1089,112 @@ def sync_tipos_processo_novos():
 
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                FPT.CODIGO,
-                FPT.NOMETIPO,
-                FPT.NOMEFICHA,
-                FPT.TIPO_PRODUCAO,
-                FPT.SEQUENCIA,
-                FPT.ATIVO,
-                FPT.PROCESSO_OPCIONAL,
-                FPT.PAGARCOMISSAO,
-                FPT.REGISTRAR_BAIXA,
-                FPT.BLOQUEAR_CALCULO,
-                FPT.LIBERAR_ENTREGA,
-                FPT.BLOQUEAR_RECEITA,
-                FPT.OBSERVACAO
-            FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
-            WHERE FPT.CODIGO > {ultimo_codigo}
-            ORDER BY FPT.CODIGO
-            ROWS 1000
-        """)
+        
+        # Processar em lotes de 1000 (sem limitação total)
+        batch_size = 1000
+        total_inseridos = 0
+        offset_codigo = ultimo_codigo
+        
+        while True:
+            logger.info(f"   🔄 Processando lote de tipos: códigos > {offset_codigo} (máximo {batch_size} por vez)")
+            
+            cursor.execute(f"""
+                SELECT
+                    FPT.CODIGO,
+                    FPT.NOMETIPO,
+                    FPT.NOMEFICHA,
+                    FPT.TIPO_PRODUCAO,
+                    FPT.SEQUENCIA,
+                    FPT.ATIVO,
+                    FPT.PROCESSO_OPCIONAL,
+                    FPT.PAGARCOMISSAO,
+                    FPT.REGISTRAR_BAIXA,
+                    FPT.BLOQUEAR_CALCULO,
+                    FPT.LIBERAR_ENTREGA,
+                    FPT.BLOQUEAR_RECEITA,
+                    FPT.OBSERVACAO
+                FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
+                WHERE FPT.CODIGO > {offset_codigo}
+                ORDER BY FPT.CODIGO
+                ROWS {batch_size}
+            """)
 
-        novos_tipos = cursor.fetchall()
+            novos_tipos = cursor.fetchall()
+            
+            if not novos_tipos:
+                logger.info(f"   ✅ Nenhum tipo novo encontrado (lote completo)")
+                break
+            
+            logger.info(f"   📦 Lote atual: {len(novos_tipos)} tipos encontrados")
+            
+            # Atualizar offset para próximo lote
+            offset_codigo = novos_tipos[-1][0]  # Último CODIGO do lote
+            logger.info(f"   📊 Último código do lote: {offset_codigo}")
+
+            # Preparar dados
+            tipos_dados = []
+            for row in novos_tipos:
+                tipo = {
+                    'codigo_tipo_original': row[0],
+                    'nome_processo': limpar_string(row[1])[:100] if row[1] else None,
+                    'nome_ficha': limpar_string(row[2])[:100] if row[2] else None,
+                    'tipo_producao': row[3],
+                    'sequencia': row[4],
+                    'ativo': bool(row[5]) if row[5] is not None else True,
+                    'processo_opcional': bool(row[6]) if row[6] is not None else False,
+                    'pagar_comissao': bool(row[7]) if row[7] is not None else False,
+                    'registrar_baixa': bool(row[8]) if row[8] is not None else False,
+                    'bloquear_calculo': bool(row[9]) if row[9] is not None else False,
+                    'liberar_entrega': bool(row[10]) if row[10] is not None else False,
+                    'bloquear_receita': bool(row[11]) if row[11] is not None else False,
+                    'observacao': limpar_string(row[12]) if row[12] else None,
+                    'updated_at': datetime.now().isoformat()
+                }
+                tipos_dados.append(tipo)
+
+            # Inserir lote no Supabase
+            if tipos_dados:
+                try:
+                    headers_upsert = {
+                        'apikey': SUPABASE_KEY,
+                        'Authorization': f'Bearer {SUPABASE_KEY}',
+                        'Content-Type': 'application/json',
+                        'Accept-Profile': 'api',
+                        'Content-Profile': 'api',
+                        'Prefer': 'resolution=merge-duplicates,return=representation'
+                    }
+
+                    url = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+                    response = requests.post(url, headers=headers_upsert, json=tipos_dados, timeout=60)
+                    
+                    if response.status_code in [200, 201]:
+                        lote_inseridos = len(tipos_dados)
+                        total_inseridos += lote_inseridos
+                        logger.info(f"   ✅ Lote inserido: {lote_inseridos} tipos (Total: {total_inseridos})")
+                    else:
+                        logger.error(f"❌ Erro ao inserir lote de tipos: {response.status_code}")
+                        logger.error(f"   Resposta: {response.text[:500]}")
+                        # Continuar mesmo com erro neste lote
+                except Exception as e:
+                    logger.error(f"❌ Erro ao inserir lote de tipos (lote {offset_codigo}): {e}", exc_info=True)
+                    # Continuar mesmo com erro neste lote
+        
         conn.close()
-
-        if not novos_tipos:
-            return {'inseridos': 0, 'mensagem': 'Nenhum tipo novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_tipos)} tipos novos")
-
-        # Preparar dados
-        tipos_dados = []
-        for row in novos_tipos:
-            tipo = {
-                'codigo_tipo_original': row[0],
-                'nome_processo': limpar_string(row[1])[:100] if row[1] else None,
-                'nome_ficha': limpar_string(row[2])[:100] if row[2] else None,
-                'tipo_producao': row[3],
-                'sequencia': row[4],
-                'ativo': bool(row[5]) if row[5] is not None else True,
-                'processo_opcional': bool(row[6]) if row[6] is not None else False,
-                'pagar_comissao': bool(row[7]) if row[7] is not None else False,
-                'registrar_baixa': bool(row[8]) if row[8] is not None else False,
-                'bloquear_calculo': bool(row[9]) if row[9] is not None else False,
-                'liberar_entrega': bool(row[10]) if row[10] is not None else False,
-                'bloquear_receita': bool(row[11]) if row[11] is not None else False,
-                'observacao': limpar_string(row[12]) if row[12] else None,
-                'updated_at': datetime.now().isoformat()
-            }
-            tipos_dados.append(tipo)
-
-        if not tipos_dados:
-            return {'inseridos': 0, 'mensagem': 'Nenhum tipo válido'}
-
-        # Headers com UPSERT (merge duplicates)
-        headers_upsert = {
-            'apikey': SUPABASE_KEY,
-            'Authorization': f'Bearer {SUPABASE_KEY}',
-            'Content-Type': 'application/json',
-            'Accept-Profile': 'api',
-            'Content-Profile': 'api',
-            'Prefer': 'resolution=merge-duplicates,return=representation'
-        }
-
-        url = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
-        response = requests.post(url, headers=headers_upsert, json=tipos_dados, timeout=60)
-
-        if response.status_code in [200, 201]:
+        
+        if total_inseridos > 0:
+            logger.info(f"✅ TOTAL: {total_inseridos} tipos sincronizados (processados em lotes)")
             return {
-                'inseridos': len(tipos_dados),
-                'mensagem': f'{len(tipos_dados)} tipos sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} tipos sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir tipos: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum tipo novo sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_tipos_processo_novos: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_tipos_processo_novos: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -1172,8 +1446,10 @@ def sync_missing_clientes():
             return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante sincronizado'}
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_missing_clientes: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_missing_clientes: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 def sync_missing_pedidos():
     """Sincroniza pedidos faltantes (buracos)"""
@@ -1319,8 +1595,10 @@ def sync_missing_pedidos():
         }
 
     except Exception as e:
-        logger.error(f"❌ Erro em sync_missing_pedidos: {e}")
-        return {'inseridos': 0, 'erro': str(e)}
+        logger.error(f"❌ Erro em sync_missing_pedidos: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
 @app.route('/sync-missing', methods=['POST'])
 def sync_missing():
@@ -1457,22 +1735,10 @@ def sync():
             logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
             result_itens = {'inseridos': 0, 'erro': str(e)}
 
-        # 5. Rastreabilidade (não tem dependência direta)
+        # 5. Tipos Processo (FASE 1 - tabela de referência, SEM dependências)
+        # IMPORTANTE: Deve ser sincronizado ANTES de rastreabilidade!
         logger.info("\n" + "="*70)
-        logger.info("5️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 5/6)")
-        logger.info("="*70)
-        try:
-            result_rastreabilidade = sync_rastreabilidade_nova()
-            logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
-            if result_rastreabilidade.get('erro'):
-                logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
-        except Exception as e:
-            logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
-            result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
-
-        # 6. Tipos Processo (tabela de referência, não tem dependência)
-        logger.info("\n" + "="*70)
-        logger.info("6️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 6/6)")
+        logger.info("5️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 5/6 - FASE 1)")
         logger.info("="*70)
         try:
             result_tipos = sync_tipos_processo_novos()
@@ -1482,6 +1748,21 @@ def sync():
         except Exception as e:
             logger.error(f"❌ Erro crítico em tipos processo: {e}", exc_info=True)
             result_tipos = {'inseridos': 0, 'erro': str(e)}
+
+        # 6. Rastreabilidade (FASE 3 - depende de pedidos + tipos_processo)
+        # IMPORTANTE: Deve ser sincronizado DEPOIS de pedidos E tipos_processo!
+        logger.info("\n" + "="*70)
+        logger.info("6️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 6/6 - FASE 3)")
+        logger.info("="*70)
+        logger.info("   ⚠️  Dependências: prime_pedidos ✅ + prime_tipos_processo ✅")
+        try:
+            result_rastreabilidade = sync_rastreabilidade_nova()
+            logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+            if result_rastreabilidade.get('erro'):
+                logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
+            result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
 
         tempo_total = (datetime.now() - inicio).total_seconds()
         
