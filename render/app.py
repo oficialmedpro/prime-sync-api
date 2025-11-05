@@ -273,8 +273,956 @@ def sync_clientes_novos():
         logger.error(f"❌ Erro em sync_clientes_novos: {e}")
         return {'inseridos': 0, 'erro': str(e)}
 
-# Por questões de espaço, vou incluir apenas as funções principais
-# As outras funções (sync_pedidos_novos, sync_formulas_novas, etc) devem ser copiadas do app.py original
+def sync_pedidos_novos():
+    """Sincroniza apenas pedidos novos"""
+    try:
+        ultimo_codigo = get_ultimo_id_supabase('prime_pedidos', 'codigo_orcamento_original')
+        logger.info(f"📊 Pedidos - Último código: {ultimo_codigo}")
+
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                A.CODIGO,
+                A.CODIGO_CLIENTE,
+                A.CADASTRO_DT,
+                A.AVIADA_DT,
+                A.ENTREGUE_DT,
+                A.VALORVENDA,
+                A.OBSERVACAO
+            FROM ATENDIMENTO_A1 A
+            WHERE A.CODIGO_CLIENTE IS NOT NULL
+            AND A.CODIGO > {ultimo_codigo}
+            ORDER BY A.CODIGO
+            ROWS 5000
+        """)
+
+        novos_pedidos = cursor.fetchall()
+        conn.close()
+
+        if not novos_pedidos:
+            return {'inseridos': 0, 'mensagem': 'Nenhum pedido novo'}
+
+        logger.info(f"✅ Encontrados {len(novos_pedidos)} pedidos novos")
+
+        # Buscar clientes em lote
+        codigos_cliente = list(set([row[1] for row in novos_pedidos]))
+        url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
+        response = requests.get(
+            url_clientes,
+            headers=headers,
+            params={
+                'select': 'id,codigo_cliente_original',
+                'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+            },
+            timeout=30
+        )
+
+        cache_clientes = {}
+        if response.status_code == 200:
+            for cli in response.json():
+                cache_clientes[cli['codigo_cliente_original']] = cli['id']
+
+        pedidos_dados = []
+        for row in novos_pedidos:
+            codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
+
+            cliente_id = cache_clientes.get(codigo_cliente)
+            if not cliente_id:
+                continue
+
+            status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
+            status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
+
+            if entregue_dt:
+                status_geral = 'ENTREGUE'
+            elif aviada_dt:
+                status_geral = 'APROVADO'
+            else:
+                status_geral = 'PENDENTE'
+
+            pedido = {
+                'codigo_orcamento_original': codigo_orcamento,
+                'codigo_cliente_original': codigo_cliente,
+                'cliente_id': cliente_id,
+                'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
+                'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
+                'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
+                'valor_total': float(valor_venda) if valor_venda else 0.0,
+                'observacoes': limpar_string(observacao),
+                'status_aprovacao': status_aprovacao,
+                'status_entrega': status_entrega,
+                'status_geral': status_geral
+            }
+            pedidos_dados.append(pedido)
+
+        if not pedidos_dados:
+            return {'inseridos': 0, 'mensagem': 'Pedidos sem clientes correspondentes'}
+
+        url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+        response = requests.post(url, headers=headers, json=pedidos_dados, timeout=30)
+
+        if response.status_code in [200, 201]:
+            return {
+                'inseridos': len(pedidos_dados),
+                'mensagem': f'{len(pedidos_dados)} pedidos sincronizados'
+            }
+        else:
+            logger.error(f"❌ Erro ao inserir pedidos: {response.status_code}")
+            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_pedidos_novos: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_formulas_novas():
+    """Sincroniza fórmulas novas com TEXTOROTULO"""
+    try:
+        # Buscar último código de fórmula baseado no pedido
+        url_formulas = f"{SUPABASE_URL}/rest/v1/prime_formulas"
+        response = requests.get(
+            url_formulas,
+            headers=headers,
+            params={
+                'select': 'codigo_orcamento_original',
+                'order': 'codigo_orcamento_original.desc',
+                'limit': 1
+            },
+            timeout=10
+        )
+
+        ultimo_codigo = 0
+        if response.status_code == 200:
+            dados = response.json()
+            if dados:
+                ultimo_codigo = dados[0]['codigo_orcamento_original']
+
+        logger.info(f"📊 Fórmulas - Último código atendimento: {ultimo_codigo}")
+
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                A2.CODIGO_ATEND_A1,
+                A2.NUMEROFORMULA,
+                A2.TEXTOROTULO,
+                A2.POSOLOGIA,
+                A2.VALORFORMULA_VENDA
+            FROM ATENDIMENTO_A2 A2
+            WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
+            AND A2.CODIGO_ATEND_A1 IS NOT NULL
+            ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
+            ROWS 5000
+        """)
+
+        novas_formulas = cursor.fetchall()
+        conn.close()
+
+        if not novas_formulas:
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula nova'}
+
+        logger.info(f"✅ Encontradas {len(novas_formulas)} fórmulas novas")
+
+        # Buscar pedidos em lote
+        codigos_orcamento = list(set([row[0] for row in novas_formulas]))
+        url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+        response = requests.get(
+            url_pedidos,
+            headers=headers,
+            params={
+                'select': 'id,codigo_orcamento_original',
+                'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
+            },
+            timeout=30
+        )
+
+        cache_pedidos = {}
+        if response.status_code == 200:
+            for ped in response.json():
+                cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+
+        formulas_dados = []
+        for row in novas_formulas:
+            codigo_atend, num_formula, texto_rotulo, posologia, valor = row
+
+            pedido_id = cache_pedidos.get(codigo_atend)
+            if not pedido_id:
+                continue
+
+            formula = {
+                'pedido_id': pedido_id,
+                'codigo_orcamento_original': codigo_atend,
+                'numero_formula': num_formula,
+                'descricao': limpar_string(texto_rotulo),  # TEXTOROTULO completo!
+                'posologia': limpar_string(posologia),
+                'valor_formula': float(valor) if valor else 0.0,
+                'updated_at': datetime.now().isoformat()
+            }
+            formulas_dados.append(formula)
+
+        if not formulas_dados:
+            return {'inseridos': 0, 'mensagem': 'Fórmulas sem pedidos correspondentes'}
+
+        url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
+        response = requests.post(url, headers=headers, json=formulas_dados, timeout=60)
+
+        if response.status_code in [200, 201]:
+            return {
+                'inseridos': len(formulas_dados),
+                'mensagem': f'{len(formulas_dados)} fórmulas sincronizadas'
+            }
+        else:
+            logger.error(f"❌ Erro ao inserir fórmulas: {response.status_code}")
+            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_formulas_novas: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_formulas_itens_novos():
+    """Sincroniza itens das fórmulas (ATENDIMENTO_A3)"""
+    try:
+        # Buscar último código de item
+        url_itens = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
+        response = requests.get(
+            url_itens,
+            headers=headers,
+            params={
+                'select': 'codigo_atendimento_original',
+                'order': 'codigo_atendimento_original.desc',
+                'limit': 1
+            },
+            timeout=10
+        )
+
+        ultimo_codigo = 0
+        if response.status_code == 200:
+            dados = response.json()
+            if dados:
+                ultimo_codigo = dados[0]['codigo_atendimento_original']
+        
+        logger.info(f"📊 Fórmulas Itens - Último código atendimento: {ultimo_codigo}")
+
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                A3.CODIGO_ATEND_A1,
+                A3.NUMEROFORMULA,
+                A3.NUMEROLINHA,
+                A3.CODIGO_PRODUTO,
+                EG.NOMEPRODUTO,
+                A3.QUANTIDADE,
+                A3.UNIDADE,
+                A3.VALORCUSTO,
+                A3.VALORVENDA,
+                A3.OBSERVACAO
+            FROM ATENDIMENTO_A3 A3
+            LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
+            WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
+            AND A3.CODIGO_ATEND_A1 IS NOT NULL
+            ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
+            ROWS 5000
+        """)
+
+        novos_itens = cursor.fetchall()
+        conn.close()
+
+        if not novos_itens:
+            return {'inseridos': 0, 'mensagem': 'Nenhum item novo'}
+
+        logger.info(f"✅ Encontrados {len(novos_itens)} itens novos")
+
+        # Montar cache COMPLETO de fórmulas com paginação
+        logger.info("   Montando cache de fórmulas...")
+        cache_formulas = {}
+        offset = 0
+        while offset < 50000:  # Max 50k fórmulas
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                headers=headers,
+                params={
+                    'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                    'limit': 1000,
+                    'offset': offset
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                dados = response.json()
+                if not dados:
+                    break
+                for formula in dados:
+                    chave = (formula['codigo_orcamento_original'], formula['numero_formula'])
+                    cache_formulas[chave] = {'id': formula['id'], 'pedido_id': formula['pedido_id']}
+                offset += 1000
+            else:
+                break
+        
+        logger.info(f"   Cache fórmulas: {len(cache_formulas)} carregadas")
+
+        itens_dados = []
+        for row in novos_itens:
+            (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
+             quantidade, unidade, valor_custo, valor_venda, observacao) = row
+
+            chave = (codigo_atend, num_formula)
+            formula_info = cache_formulas.get(chave)
+
+            if not formula_info:
+                continue
+
+            item = {
+                'formula_id': formula_info['id'],
+                'pedido_id': formula_info['pedido_id'],
+                'codigo_atendimento_original': codigo_atend,
+                'numero_formula': num_formula,
+                'numero_linha': num_linha,
+                'codigo_produto': codigo_produto,
+                'nome_produto': limpar_string(nome_produto) or 'PRODUTO NÃO IDENTIFICADO',
+                'quantidade': float(quantidade) if quantidade else None,
+                'unidade': limpar_string(unidade),
+                'quantidade_calculo': float(quantidade) if quantidade else None,
+                'valor_custo': float(valor_custo) if valor_custo else 0.0,
+                'valor_venda': float(valor_venda) if valor_venda else 0.0,
+                'valor_venda_desconto': 0.0,
+                'inclusao_sistema': True,
+                'visualizar_produto': True,
+                'observacao': limpar_string(observacao),
+                'updated_at': datetime.now().isoformat()
+            }
+            itens_dados.append(item)
+
+        if not itens_dados:
+            return {'inseridos': 0, 'mensagem': 'Itens sem fórmulas correspondentes'}
+
+        # Headers com ignore-duplicates
+        headers_insert = headers.copy()
+        headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+        
+        url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
+        response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
+
+        if response.status_code in [200, 201]:
+            return {
+                'inseridos': len(itens_dados),
+                'mensagem': f'{len(itens_dados)} itens sincronizados'
+            }
+        else:
+            logger.error(f"❌ Erro ao inserir itens: {response.status_code}")
+            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_formulas_itens_novos: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_rastreabilidade_nova():
+    """Sincroniza rastreabilidade nova (PROCESSO_MANIPULACAO)"""
+    try:
+        logger.info("📋 Sincronizando rastreabilidade...")
+
+        # Buscar último registro
+        url_ultimo = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
+        response = requests.get(
+            url_ultimo,
+            headers=headers,
+            params={
+                'select': 'codigo_processo_original',
+                'order': 'codigo_processo_original.desc',
+                'limit': 1
+            },
+            timeout=10
+        )
+
+        ultimo_codigo = 0
+        if response.status_code == 200:
+            dados = response.json()
+            if dados:
+                ultimo_codigo = dados[0]['codigo_processo_original']
+
+        logger.info(f"📊 Rastreabilidade - Último código: {ultimo_codigo}")
+
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                PM.CODIGO,
+                PM.TIPO_MOV,
+                PM.CODIGO_MOV,
+                PM.CODIGO_PROCESSO_TIPO,
+                PM.CODIGO_FUNCIONARIO,
+                PM.DATA_PROCESSO,
+                PM.HORA_PROCESSO,
+                PM.SEQUENCIA
+            FROM PROCESSO_MANIPULACAO PM
+            WHERE PM.CODIGO > {ultimo_codigo}
+            ORDER BY PM.CODIGO
+            ROWS 1000
+        """)
+
+        novos_registros = cursor.fetchall()
+        conn.close()
+
+        if not novos_registros:
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro novo'}
+
+        logger.info(f"✅ Encontrados {len(novos_registros)} registros novos")
+
+        # Preparar dados com lookup de IDs
+        rastreabilidade_dados = []
+        for row in novos_registros:
+            codigo_orcamento = row[2]
+            codigo_tipo = row[3]
+
+            # Buscar pedido_id no Supabase
+            url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+            resp_pedido = requests.get(
+                url_pedido,
+                headers=headers,
+                params={'select': 'id', 'codigo_orcamento_original': f'eq.{codigo_orcamento}', 'limit': 1},
+                timeout=10
+            )
+
+            if resp_pedido.status_code != 200 or not resp_pedido.json():
+                logger.warning(f"⚠️ Pedido {codigo_orcamento} não encontrado no Supabase, pulando...")
+                continue
+
+            pedido_id = resp_pedido.json()[0]['id']
+
+            # Buscar tipo_processo_id no Supabase
+            url_tipo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+            resp_tipo = requests.get(
+                url_tipo,
+                headers=headers,
+                params={'select': 'id', 'codigo_tipo_original': f'eq.{codigo_tipo}', 'limit': 1},
+                timeout=10
+            )
+
+            if resp_tipo.status_code != 200 or not resp_tipo.json():
+                logger.warning(f"⚠️ Tipo de processo {codigo_tipo} não encontrado no Supabase, pulando...")
+                continue
+
+            tipo_processo_id = resp_tipo.json()[0]['id']
+
+            rastro = {
+                'codigo_processo_original': row[0],
+                'pedido_id': pedido_id,
+                'codigo_orcamento_original': codigo_orcamento,
+                'tipo_processo_id': tipo_processo_id,
+                'codigo_tipo_original': codigo_tipo,
+                'tipo_movimento': row[1],
+                'codigo_funcionario': row[4],
+                'data_processo': row[5].isoformat() if row[5] else None,
+                'hora_processo': str(row[6]) if row[6] else None,
+                'sequencia': row[7],
+                'status_processo': 'CONCLUIDO',
+                'updated_at': datetime.now().isoformat()
+            }
+            rastreabilidade_dados.append(rastro)
+
+        if not rastreabilidade_dados:
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido'}
+
+        url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
+        response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
+
+        if response.status_code in [200, 201]:
+            return {
+                'inseridos': len(rastreabilidade_dados),
+                'mensagem': f'{len(rastreabilidade_dados)} registros sincronizados'
+            }
+        else:
+            logger.error(f"❌ Erro ao inserir rastreabilidade: {response.status_code} - {response.text}")
+            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_rastreabilidade_nova: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_tipos_processo_novos():
+    """Sincroniza tipos de processo (FORMAFARMACEUTICA_PROCESSO_TIPO)"""
+    try:
+        logger.info("📋 Sincronizando tipos de processo...")
+
+        # Buscar último código processado
+        url_ultimo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+        response = requests.get(
+            url_ultimo,
+            headers=headers,
+            params={
+                'select': 'codigo_tipo_original',
+                'order': 'codigo_tipo_original.desc',
+                'limit': 1
+            },
+            timeout=10
+        )
+
+        ultimo_codigo = 0
+        if response.status_code == 200:
+            dados = response.json()
+            if dados:
+                ultimo_codigo = dados[0]['codigo_tipo_original']
+
+        logger.info(f"📊 Tipos Processo - Último código: {ultimo_codigo}")
+
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                FPT.CODIGO,
+                FPT.NOMETIPO,
+                FPT.NOMEFICHA,
+                FPT.TIPO_PRODUCAO,
+                FPT.SEQUENCIA,
+                FPT.ATIVO,
+                FPT.PROCESSO_OPCIONAL,
+                FPT.PAGARCOMISSAO,
+                FPT.REGISTRAR_BAIXA,
+                FPT.BLOQUEAR_CALCULO,
+                FPT.LIBERAR_ENTREGA,
+                FPT.BLOQUEAR_RECEITA,
+                FPT.OBSERVACAO
+            FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
+            WHERE FPT.CODIGO > {ultimo_codigo}
+            ORDER BY FPT.CODIGO
+            ROWS 1000
+        """)
+
+        novos_tipos = cursor.fetchall()
+        conn.close()
+
+        if not novos_tipos:
+            return {'inseridos': 0, 'mensagem': 'Nenhum tipo novo'}
+
+        logger.info(f"✅ Encontrados {len(novos_tipos)} tipos novos")
+
+        # Preparar dados
+        tipos_dados = []
+        for row in novos_tipos:
+            tipo = {
+                'codigo_tipo_original': row[0],
+                'nome_processo': limpar_string(row[1])[:100] if row[1] else None,
+                'nome_ficha': limpar_string(row[2])[:100] if row[2] else None,
+                'tipo_producao': row[3],
+                'sequencia': row[4],
+                'ativo': bool(row[5]) if row[5] is not None else True,
+                'processo_opcional': bool(row[6]) if row[6] is not None else False,
+                'pagar_comissao': bool(row[7]) if row[7] is not None else False,
+                'registrar_baixa': bool(row[8]) if row[8] is not None else False,
+                'bloquear_calculo': bool(row[9]) if row[9] is not None else False,
+                'liberar_entrega': bool(row[10]) if row[10] is not None else False,
+                'bloquear_receita': bool(row[11]) if row[11] is not None else False,
+                'observacao': limpar_string(row[12]) if row[12] else None,
+                'updated_at': datetime.now().isoformat()
+            }
+            tipos_dados.append(tipo)
+
+        if not tipos_dados:
+            return {'inseridos': 0, 'mensagem': 'Nenhum tipo válido'}
+
+        # Headers com UPSERT (merge duplicates)
+        headers_upsert = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Content-Type': 'application/json',
+            'Accept-Profile': 'api',
+            'Content-Profile': 'api',
+            'Prefer': 'resolution=merge-duplicates,return=representation'
+        }
+
+        url = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+        response = requests.post(url, headers=headers_upsert, json=tipos_dados, timeout=60)
+
+        if response.status_code in [200, 201]:
+            return {
+                'inseridos': len(tipos_dados),
+                'mensagem': f'{len(tipos_dados)} tipos sincronizados'
+            }
+        else:
+            logger.error(f"❌ Erro ao inserir tipos: {response.status_code}")
+            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_tipos_processo_novos: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_missing_clientes():
+    """Sincroniza clientes faltantes (buracos) - AUTO-CORREÇÃO"""
+    try:
+        logger.info("🔍 Buscando clientes faltantes...")
+
+        # Pegar todos códigos de clientes já no Supabase
+        todos_clientes_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                headers=headers,
+                params={
+                    'select': 'codigo_cliente_original',
+                    'codigo_cliente_original': 'lt.500000',  # Ignorar códigos especiais
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_cliente_original.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_clientes_sb.extend([d['codigo_cliente_original'] for d in dados])
+                offset += limit
+                if len(dados) < limit:
+                    break
+            else:
+                break
+
+        codigos_sb = set(todos_clientes_sb)
+        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
+
+        logger.info(f"   {len(codigos_sb)} clientes já sincronizados (max: {max_codigo_sb})")
+
+        # Buscar todos clientes do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM CLIENTE
+            WHERE ATIVO = -1
+            AND CODIGO < 500000
+            AND CODIGO <= {max_codigo_sb}
+            ORDER BY CODIGO
+        """)
+
+        todos_clientes_fb = [row[0] for row in cursor.fetchall()]
+        codigos_fb = set(todos_clientes_fb)
+
+        logger.info(f"   {len(codigos_fb)} clientes no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = codigos_fb - codigos_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} clientes FALTANTES identificados!")
+
+        # Processar faltantes em lotes de 1000 para evitar timeout
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+        total_lotes = (len(faltantes_list) + 999) // 1000  # Arredondar para cima
+        
+        # Processar em lotes
+        for lote_idx in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[lote_idx:lote_idx + 1000]
+            codigos_str = ','.join(map(str, lote))
+            
+            logger.info(f"   📦 Processando lote {lote_idx // 1000 + 1} de {total_lotes} ({len(lote)} clientes)")
+
+            # Buscar dados básicos
+            cursor.execute(f"""
+                SELECT 
+                    C.CODIGO,
+                    C.NOMECLIENTE,
+                    C.CPF_CNPJ,
+                    C.DIANASCIMENTO,
+                    C.MESNASCIMENTO,
+                    C.ANONASCIMENTO,
+                    C.SEXO,
+                    C.EMAIL1,
+                    CE.NOMECIDADE,
+                    CE.UF,
+                    C.ATIVO
+                FROM CLIENTE C
+                LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
+                WHERE C.CODIGO IN ({codigos_str})
+            """)
+
+            clientes_faltantes = cursor.fetchall()
+
+            # Buscar telefones
+            cursor.execute(f"""
+                SELECT 
+                    CT.CODIGO_CADASTRO,
+                    CT.TELEFONEPREFIXO,
+                    CT.TELEFONE
+                FROM CADASTRO_TELEFONE CT
+                WHERE CT.TIPO_CADASTRO = 1
+                AND CT.CODIGO_CADASTRO IN ({codigos_str})
+            """)
+
+            telefones_dict = {}
+            for tel_row in cursor.fetchall():
+                codigo_cli = tel_row[0]
+                prefixo = str(tel_row[1]).strip() if tel_row[1] else ""
+                numero = str(tel_row[2]).strip() if tel_row[2] else ""
+                telefone_completo = (prefixo + numero).strip() or None
+                if telefone_completo and codigo_cli not in telefones_dict:
+                    telefones_dict[codigo_cli] = telefone_completo
+
+            # Buscar endereços
+            cursor.execute(f"""
+                SELECT 
+                    CE.CODIGO_CADASTRO,
+                    CE.ENDERECO,
+                    CE.NUMERO,
+                    CE.CEP
+                FROM CADASTRO_ENDERECO CE
+                WHERE CE.TIPO_CADASTRO = 1
+                AND CE.CODIGO_CADASTRO IN ({codigos_str})
+            """)
+
+            enderecos_dict = {}
+            for end_row in cursor.fetchall():
+                codigo_cli = end_row[0]
+                if codigo_cli not in enderecos_dict:
+                    enderecos_dict[codigo_cli] = {
+                        'logradouro': end_row[1],
+                        'numero': end_row[2],
+                        'cep': end_row[3]
+                    }
+
+            # Preparar dados
+            clientes_dados = []
+            for row in clientes_faltantes:
+                codigo_cliente = row[0]
+                
+                # Formatar data de nascimento
+                data_nasc = None
+                if row[3] and row[4] and row[5]:
+                    try:
+                        data_nasc = f"{int(row[5])}-{int(row[4]):02d}-{int(row[3]):02d}"
+                    except:
+                        pass
+
+                telefone = telefones_dict.get(codigo_cliente)
+                endereco = enderecos_dict.get(codigo_cliente, {})
+
+                cliente = {
+                    'codigo_cliente_original': codigo_cliente,
+                    'nome': limpar_string(row[1])[:255] if row[1] else None,
+                    'cpf_cnpj': limpar_string(row[2])[:20] if row[2] else None,
+                    'ativo': bool(row[10]) if row[10] is not None else True,
+                    'data_nascimento': data_nasc,
+                    'sexo': str(row[6])[:1] if row[6] else None,
+                    'email': limpar_string(row[7])[:255] if row[7] else None,
+                    'telefone': telefone,
+                    'endereco_logradouro': limpar_string(endereco.get('logradouro'))[:255] if endereco.get('logradouro') else None,
+                    'endereco_numero': str(endereco.get('numero')) if endereco.get('numero') else None,
+                    'endereco_cep': limpar_string(endereco.get('cep'))[:10] if endereco.get('cep') else None,
+                    'endereco_cidade': limpar_string(row[8])[:100] if row[8] else None,
+                    'endereco_estado': limpar_string(row[9])[:2] if row[9] else None,
+                    # Campos obrigatórios com valores padrão
+                    'total_orcamentos': 0,
+                    'total_orcamentos_aprovados': 0,
+                    'total_orcamentos_entregues': 0,
+                    'valor_total_orcamentos': 0.0,
+                    'valor_total_aprovados': 0.0,
+                    'valor_total_entregues': 0.0,
+                    'valor_medio_orcamento': 0.0,
+                    'valor_medio_aprovado': 0.0,
+                    'valor_medio_entregue': 0.0,
+                }
+                clientes_dados.append(cliente)
+
+            if clientes_dados:
+                # Usar ignore-duplicates para evitar erro
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                    headers=headers_insert,
+                    json=clientes_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    lote_inseridos = len(clientes_dados)
+                    total_inseridos += lote_inseridos
+                    logger.info(f"   ✅ Lote {lote_idx // 1000 + 1}: {lote_inseridos} clientes sincronizados")
+                else:
+                    logger.error(f"❌ Erro ao inserir lote {lote_idx // 1000 + 1}: {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:200]}")
+        
+        conn.close()
+        
+        if total_inseridos > 0:
+            logger.info(f"   ✅ Total: {total_inseridos} clientes faltantes sincronizados")
+            return {
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} clientes faltantes sincronizados'
+            }
+        else:
+            return {'inseridos': 0, 'mensagem': 'Nenhum cliente faltante sincronizado'}
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_clientes: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
+
+def sync_missing_pedidos():
+    """Sincroniza pedidos faltantes (buracos)"""
+    try:
+        logger.info("🔍 Buscando pedidos faltantes...")
+
+        # Pegar todos códigos de pedidos já no Supabase
+        todos_pedidos_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'codigo_orcamento_original',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_orcamento_original.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_pedidos_sb.extend([d['codigo_orcamento_original'] for d in dados])
+                offset += limit
+            else:
+                break
+
+        codigos_sb = set(todos_pedidos_sb)
+        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
+
+        logger.info(f"   {len(codigos_sb)} pedidos já sincronizados (max: {max_codigo_sb})")
+
+        # Buscar todos pedidos do Firebird até o max_codigo_sb
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM ATENDIMENTO_A1
+            WHERE CODIGO_CLIENTE IS NOT NULL
+            AND CODIGO <= {max_codigo_sb}
+            ORDER BY CODIGO
+        """)
+
+        todos_pedidos_fb = [row[0] for row in cursor.fetchall()]
+        codigos_fb = set(todos_pedidos_fb)
+
+        logger.info(f"   {len(codigos_fb)} pedidos no Firebird (até código {max_codigo_sb})")
+
+        # Encontrar buracos
+        faltantes = codigos_fb - codigos_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum pedido faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} pedidos FALTANTES identificados!")
+
+        # Buscar dados dos pedidos faltantes (em lotes de 1000)
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+
+        for i in range(0, len(faltantes_list), 1000):
+            lote = faltantes_list[i:i+1000]
+            codigos_str = ','.join(map(str, lote))
+
+            cursor.execute(f"""
+                SELECT
+                    A.CODIGO,
+                    A.CODIGO_CLIENTE,
+                    A.CADASTRO_DT,
+                    A.AVIADA_DT,
+                    A.ENTREGUE_DT,
+                    A.VALORVENDA,
+                    A.OBSERVACAO
+                FROM ATENDIMENTO_A1 A
+                WHERE A.CODIGO IN ({codigos_str})
+            """)
+
+            pedidos_faltantes = cursor.fetchall()
+
+            # Buscar clientes
+            codigos_cliente = list(set([row[1] for row in pedidos_faltantes]))
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_cliente_original',
+                    'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+                },
+                timeout=30
+            )
+
+            cache_clientes = {}
+            if response.status_code == 200:
+                for cli in response.json():
+                    cache_clientes[cli['codigo_cliente_original']] = cli['id']
+
+            # Preparar dados
+            pedidos_dados = []
+            for row in pedidos_faltantes:
+                codigo_cli = row[1]
+                if codigo_cli not in cache_clientes:
+                    continue
+
+                status_aprovacao = 'APROVADO' if row[3] else 'NAO_APROVADO'
+                status_entrega = 'ENTREGUE' if row[4] else 'NAO_ENTREGUE'
+
+                if row[4]:
+                    status_geral = 'ENTREGUE'
+                elif row[3]:
+                    status_geral = 'APROVADO'
+                else:
+                    status_geral = 'PENDENTE'
+
+                pedidos_dados.append({
+                    'codigo_orcamento_original': row[0],
+                    'cliente_id': cache_clientes[codigo_cli],
+                    'codigo_cliente_original': codigo_cli,
+                    'data_criacao': row[2].isoformat() if row[2] else None,
+                    'data_aprovacao': row[3].isoformat() if row[3] else None,
+                    'data_entrega': row[4].isoformat() if row[4] else None,
+                    'valor_total': float(row[5]) if row[5] else 0.0,
+                    'observacoes': limpar_string(row[6]),
+                    'status_aprovacao': status_aprovacao,
+                    'status_entrega': status_entrega,
+                    'status_geral': status_geral
+                })
+
+            if pedidos_dados:
+                # Usar ignore-duplicates para evitar erro
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                    headers=headers_insert,
+                    json=pedidos_dados,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    total_inseridos += len(pedidos_dados)
+                    logger.info(f"   ✅ Lote {i//1000 + 1}: {len(pedidos_dados)} pedidos inseridos")
+
+        conn.close()
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} pedidos faltantes sincronizados'
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_pedidos: {e}")
+        return {'inseridos': 0, 'erro': str(e)}
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -302,17 +1250,142 @@ def sync():
         if API_TOKEN and f'Bearer {API_TOKEN}' not in auth_header:
             return jsonify({'erro': 'Não autorizado'}), 401
 
-        # Sincronizar (ordem: clientes, pedidos, fórmulas, etc)
-        result_clientes = sync_clientes_novos()
-        logger.info(f"📋 Clientes: {result_clientes}")
+        # Sincronizar na ordem correta (respeitando dependências)
+        # 1. Clientes primeiro (não depende de nada)
+        logger.info("\n" + "="*70)
+        logger.info("1️⃣ SINCRONIZANDO CLIENTES (ordem: 1/6)")
+        logger.info("="*70)
+        try:
+            result_clientes = sync_clientes_novos()
+            logger.info(f"📋 Clientes: {result_clientes}")
+            if result_clientes.get('erro'):
+                logger.warning(f"⚠️ Erro em clientes (continuando): {result_clientes['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar clientes faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("1️⃣.1 SINCRONIZANDO CLIENTES FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_clientes_missing = sync_missing_clientes()
+                if result_clientes_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Clientes faltantes sincronizados: {result_clientes_missing}")
+                    # Adicionar ao total de clientes
+                    result_clientes['inseridos'] = result_clientes.get('inseridos', 0) + result_clientes_missing.get('inseridos', 0)
+                    result_clientes['faltantes_sincronizados'] = result_clientes_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar clientes faltantes (continuando): {e}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em clientes: {e}", exc_info=True)
+            result_clientes = {'inseridos': 0, 'erro': str(e)}
 
-        # TODO: Adicionar outras funções de sincronização aqui
-        # result_pedidos = sync_pedidos_novos()
-        # result_formulas = sync_formulas_novas()
-        # etc...
+        # 2. Pedidos (depende de clientes)
+        logger.info("\n" + "="*70)
+        logger.info("2️⃣ SINCRONIZANDO PEDIDOS (ordem: 2/6)")
+        logger.info("="*70)
+        try:
+            result_pedidos = sync_pedidos_novos()
+            logger.info(f"📋 Pedidos: {result_pedidos}")
+            if result_pedidos.get('erro'):
+                logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar pedidos faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("2️⃣.1 SINCRONIZANDO PEDIDOS FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_pedidos_missing = sync_missing_pedidos()
+                if result_pedidos_missing.get('inseridos', 0) > 0:
+                    logger.info(f"✅ Pedidos faltantes sincronizados: {result_pedidos_missing}")
+                    # Adicionar ao total de pedidos
+                    result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + result_pedidos_missing.get('inseridos', 0)
+                    result_pedidos['faltantes_sincronizados'] = result_pedidos_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes (continuando): {e}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
+            result_pedidos = {'inseridos': 0, 'erro': str(e)}
+
+        # 3. Fórmulas (depende de pedidos)
+        logger.info("\n" + "="*70)
+        logger.info("3️⃣ SINCRONIZANDO FÓRMULAS (ordem: 3/6)")
+        logger.info("="*70)
+        try:
+            result_formulas = sync_formulas_novas()
+            logger.info(f"📋 Fórmulas: {result_formulas}")
+            if result_formulas.get('erro'):
+                logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
+            result_formulas = {'inseridos': 0, 'erro': str(e)}
+
+        # 4. Itens de Fórmulas (depende de fórmulas)
+        logger.info("\n" + "="*70)
+        logger.info("4️⃣ SINCRONIZANDO ITENS DE FÓRMULAS (ordem: 4/6)")
+        logger.info("="*70)
+        try:
+            result_itens = sync_formulas_itens_novos()
+            logger.info(f"📋 Itens: {result_itens}")
+            if result_itens.get('erro'):
+                logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
+            result_itens = {'inseridos': 0, 'erro': str(e)}
+
+        # 5. Rastreabilidade (não tem dependência direta)
+        logger.info("\n" + "="*70)
+        logger.info("5️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 5/6)")
+        logger.info("="*70)
+        try:
+            result_rastreabilidade = sync_rastreabilidade_nova()
+            logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
+            if result_rastreabilidade.get('erro'):
+                logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
+            result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
+
+        # 6. Tipos Processo (tabela de referência, não tem dependência)
+        logger.info("\n" + "="*70)
+        logger.info("6️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 6/6)")
+        logger.info("="*70)
+        try:
+            result_tipos = sync_tipos_processo_novos()
+            logger.info(f"📋 Tipos Processo: {result_tipos}")
+            if result_tipos.get('erro'):
+                logger.warning(f"⚠️ Erro em tipos processo (continuando): {result_tipos['erro']}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico em tipos processo: {e}", exc_info=True)
+            result_tipos = {'inseridos': 0, 'erro': str(e)}
 
         tempo_total = (datetime.now() - inicio).total_seconds()
         
+        total_inseridos = (
+            result_clientes.get('inseridos', 0) +
+            result_pedidos.get('inseridos', 0) +
+            result_formulas.get('inseridos', 0) +
+            result_itens.get('inseridos', 0) +
+            result_rastreabilidade.get('inseridos', 0) +
+            result_tipos.get('inseridos', 0)
+        )
+
+        # Verificar se houve erros
+        erros = []
+        if result_clientes.get('erro'):
+            erros.append(f"clientes: {result_clientes['erro']}")
+        if result_pedidos.get('erro'):
+            erros.append(f"pedidos: {result_pedidos['erro']}")
+        if result_formulas.get('erro'):
+            erros.append(f"formulas: {result_formulas['erro']}")
+        if result_itens.get('erro'):
+            erros.append(f"itens: {result_itens['erro']}")
+        if result_rastreabilidade.get('erro'):
+            erros.append(f"rastreabilidade: {result_rastreabilidade['erro']}")
+        if result_tipos.get('erro'):
+            erros.append(f"tipos_processo: {result_tipos['erro']}")
+
+        # Versão via variável de ambiente
         API_VERSION = os.getenv('API_VERSION', '3.0.0')
         resultado = {
             'sucesso': True,
@@ -320,10 +1393,21 @@ def sync():
             'tempo_execucao_segundos': tempo_total,
             'version': API_VERSION,
             'clientes': result_clientes,
-            'total_inseridos': result_clientes.get('inseridos', 0)
+            'pedidos': result_pedidos,
+            'formulas': result_formulas,
+            'formulas_itens': result_itens,
+            'rastreabilidade': result_rastreabilidade,
+            'tipos_processo': result_tipos,
+            'total_inseridos': total_inseridos
         }
 
-        logger.info(f"✅ CONCLUÍDO - Total: {resultado['total_inseridos']} registros em {tempo_total:.1f}s")
+        if erros:
+            resultado['avisos'] = erros
+            logger.warning(f"⚠️ CONCLUÍDO COM AVISOS - Total: {total_inseridos} registros em {tempo_total:.1f}s")
+            logger.warning(f"   Avisos: {len(erros)} tabela(s) com problemas")
+        else:
+            logger.info(f"✅ CONCLUÍDO COM SUCESSO - Total: {total_inseridos} registros em {tempo_total:.1f}s")
+
         return jsonify(resultado)
 
     except Exception as e:
