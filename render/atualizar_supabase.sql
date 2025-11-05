@@ -17,7 +17,7 @@ BEGIN
   SELECT * INTO v_response
   FROM http((
     'POST',
-    'https://prime-sync.onrender.com/sync',  -- ⚠️ SUBSTITUA pela URL do seu serviço no Render
+    'https://prime-sync-api.onrender.com/sync',  -- URL do Render.com
     ARRAY[
       http_header('Content-Type', 'application/json'),
       http_header('Authorization', 'Bearer prime-sync-2025-xY9kL2mP4nQ8wR5t')
