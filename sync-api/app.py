@@ -1171,6 +1171,10 @@ def sync_tipos_processo_novos():
                         lote_inseridos = len(tipos_dados)
                         total_inseridos += lote_inseridos
                         logger.info(f"   ✅ Lote inserido: {lote_inseridos} tipos (Total: {total_inseridos})")
+                    elif response.status_code == 409:
+                        # 409 = conflito (registro já existe) - isso é OK, significa que já está sincronizado
+                        logger.info(f"   ✅ Lote já sincronizado (409): {len(tipos_dados)} tipos já existem no Supabase")
+                        # Não contar como inseridos, mas não é um erro
                     else:
                         logger.error(f"❌ Erro ao inserir lote de tipos: {response.status_code}")
                         logger.error(f"   Resposta: {response.text[:500]}")
@@ -1188,7 +1192,9 @@ def sync_tipos_processo_novos():
                 'mensagem': f'{total_inseridos} tipos sincronizados'
             }
         else:
-            return {'inseridos': 0, 'mensagem': 'Nenhum tipo novo sincronizado'}
+            # Se não inseriu nenhum mas encontrou tipos, pode ser que todos já existam (409)
+            logger.info(f"ℹ️  Nenhum tipo novo inserido (todos já podem estar sincronizados)")
+            return {'inseridos': 0, 'mensagem': 'Nenhum tipo novo sincronizado (todos já existem)'}
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_tipos_processo_novos: {e}", exc_info=True)
