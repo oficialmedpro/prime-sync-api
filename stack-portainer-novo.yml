@@ -2,7 +2,7 @@ version: "3.7"
 
 services:
   prime-sync-api:
-    image: oficialmedpro/prime-sync-api:master-4a4e75c  # Versão 2.0.9 - Commit 4a4e75c (Melhorias de logging e paginação)
+    image: oficialmedpro/prime-sync-api:master-9eeee0a  # Versão 2.0.10 - Commit 9eeee0a (Sync missing para fórmulas e rastreabilidade)
     networks:
       - OficialMed
     environment:
@@ -22,7 +22,7 @@ services:
       # API Token (direto, sem secret)
       - API_TOKEN=prime-sync-2025-xY9kL2mP4nQ8wR5t
       # Versão da API - controla a versão retornada
-      - API_VERSION=2.0.9
+      - API_VERSION=2.0.10
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health').getcode()==200 else 1)"]
       interval: 30s
