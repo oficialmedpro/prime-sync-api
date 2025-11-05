@@ -2,7 +2,7 @@ version: "3.7"
 
 services:
   prime-sync-api:
-    image: oficialmedpro/prime-sync-api:latest
+    image: oficialmedpro/prime-sync-api:latest  # Versão 2.0.8 - aguardar GitHub Actions construir
     networks:
       - OficialMed
     environment:
@@ -21,6 +21,8 @@ services:
 
       # API Token (direto, sem secret)
       - API_TOKEN=prime-sync-2025-xY9kL2mP4nQ8wR5t
+      # Versão da API - controla a versão retornada
+      - API_VERSION=2.0.9
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health').getcode()==200 else 1)"]
       interval: 30s

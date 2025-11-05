@@ -924,11 +924,13 @@ def sync_tipos_processo_novos():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Endpoint de health check - v2.0.7"""
+    """Endpoint de health check"""
+    # Versão via variável de ambiente - não precisa editar código
+    API_VERSION = os.getenv('API_VERSION', '2.0.9')
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.0.8'
+        'version': API_VERSION
     })
 
 @app.route('/auditoria/historico', methods=['GET'])
@@ -1539,11 +1541,13 @@ def sync():
             }
         )
 
+        # Versão via variável de ambiente - não precisa editar código
+        API_VERSION = os.getenv('API_VERSION', '2.0.9')
         resultado = {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.0.8',
+            'version': API_VERSION,
             'auditoria_id': auditoria_id,
             'clientes': result_clientes,
             'pedidos': result_pedidos,
