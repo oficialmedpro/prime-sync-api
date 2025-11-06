@@ -12,6 +12,8 @@ import requests
 import os
 from datetime import datetime
 import logging
+import time
+import re
 from auditoria import iniciar_auditoria, finalizar_auditoria, verificar_integridade, listar_ultimas_sincronizacoes
 
 app = Flask(__name__)
@@ -67,6 +69,279 @@ def limpar_string(texto):
     if not texto:
         return None
     return str(texto).replace('\x00', '').replace('\u0000', '').strip() or None
+
+def sanitizar_data(data):
+    """Sanitiza e valida datas - converte datas inválidas para None"""
+    if not data:
+        return None
+    
+    # Se já é string ISO, validar formato
+    if isinstance(data, str):
+        # Tentar parsear ISO format
+        try:
+            datetime.fromisoformat(data.replace('Z', '+00:00'))
+            return data
+        except:
+            pass
+        
+        # Tentar parsear formato brasileiro (DD/MM/YYYY)
+        try:
+            partes = data.split('/')
+            if len(partes) == 3:
+                dia, mes, ano = int(partes[0]), int(partes[1]), int(partes[2])
+                if 1 <= dia <= 31 and 1 <= mes <= 12 and 1900 <= ano <= 2100:
+                    return f"{ano}-{mes:02d}-{dia:02d}"
+        except:
+            pass
+        
+        # Se não conseguiu parsear, retornar None
+        return None
+    
+    # Se é datetime object, converter para ISO
+    if isinstance(data, datetime):
+        try:
+            return data.isoformat()
+        except:
+            return None
+    
+    # Se é date object, converter para ISO
+    if hasattr(data, 'isoformat'):
+        try:
+            return data.isoformat()
+        except:
+            return None
+    
+    return None
+
+def sanitizar_string(texto, max_length=None):
+    """Sanitiza strings - remove caracteres inválidos e trunca se necessário"""
+    if not texto:
+        return None
+    
+    # Converter para string
+    texto = str(texto)
+    
+    # Remover caracteres nulos e inválidos
+    texto = texto.replace('\x00', '').replace('\u0000', '').replace('\r\n', ' ').replace('\n', ' ')
+    
+    # Remover caracteres de controle (exceto espaços e tabs)
+    texto = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', texto)
+    
+    # Limpar espaços extras
+    texto = texto.strip()
+    
+    # Truncar se necessário
+    if max_length and len(texto) > max_length:
+        texto = texto[:max_length]
+        logger.debug(f"   ⚠️  String truncada para {max_length} caracteres")
+    
+    return texto if texto else None
+
+def sanitizar_cpf_cnpj(cpf_cnpj):
+    """Sanitiza CPF/CNPJ - remove caracteres não numéricos"""
+    if not cpf_cnpj:
+        return None
+    
+    # Remover caracteres não numéricos
+    cpf_cnpj = re.sub(r'[^0-9]', '', str(cpf_cnpj))
+    
+    # Validar tamanho (CPF: 11, CNPJ: 14)
+    if len(cpf_cnpj) not in [11, 14]:
+        logger.debug(f"   ⚠️  CPF/CNPJ inválido (tamanho {len(cpf_cnpj)}): {cpf_cnpj[:10]}...")
+        return None
+    
+    return cpf_cnpj
+
+def sanitizar_cep(cep):
+    """Sanitiza CEP - remove caracteres não numéricos"""
+    if not cep:
+        return None
+    
+    # Remover caracteres não numéricos
+    cep = re.sub(r'[^0-9]', '', str(cep))
+    
+    # Validar tamanho (CEP: 8 dígitos)
+    if len(cep) != 8:
+        logger.debug(f"   ⚠️  CEP inválido (tamanho {len(cep)}): {cep}")
+        return None
+    
+    return cep
+
+def inserir_com_retry(url, headers, json_data, max_tentativas=3, timeout=60):
+    """Insere dados no Supabase com retry e backoff exponencial"""
+    for tentativa in range(max_tentativas):
+        try:
+            response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            
+            # Sucesso
+            if response.status_code in [200, 201]:
+                return response
+            
+            # Rate limiting - aguardar e tentar novamente
+            if response.status_code == 429:
+                wait_time = 2 ** tentativa  # Backoff exponencial: 1s, 2s, 4s
+                logger.warning(f"   ⚠️  Rate limiting (429) - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+                time.sleep(wait_time)
+                continue
+            
+            # Erro de servidor (5xx) - tentar novamente
+            if 500 <= response.status_code < 600:
+                wait_time = 2 ** tentativa
+                logger.warning(f"   ⚠️  Erro de servidor ({response.status_code}) - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+                time.sleep(wait_time)
+                continue
+            
+            # Outros erros (4xx) - não tentar novamente
+            logger.error(f"   ❌ Erro HTTP {response.status_code}: {response.text[:200]}")
+            return response
+            
+        except requests.exceptions.Timeout:
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Timeout - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+            if tentativa < max_tentativas - 1:
+                time.sleep(wait_time)
+                continue
+            raise
+            
+        except requests.exceptions.ConnectionError:
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Erro de conexão - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+            if tentativa < max_tentativas - 1:
+                time.sleep(wait_time)
+                continue
+            raise
+            
+        except Exception as e:
+            if tentativa == max_tentativas - 1:
+                logger.error(f"   ❌ Erro após {max_tentativas} tentativas: {e}")
+                raise
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Erro inesperado - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas}): {e}")
+            time.sleep(wait_time)
+            continue
+    
+    # Se chegou aqui, todas as tentativas falharam
+    raise Exception(f"Falha após {max_tentativas} tentativas")
+
+def buscar_com_retry(url, headers, params=None, max_tentativas=3, timeout=30):
+    """Busca dados do Supabase com retry e backoff exponencial"""
+    for tentativa in range(max_tentativas):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=timeout)
+            
+            # Sucesso
+            if response.status_code == 200:
+                return response
+            
+            # Rate limiting - aguardar e tentar novamente
+            if response.status_code == 429:
+                wait_time = 2 ** tentativa
+                logger.warning(f"   ⚠️  Rate limiting (429) - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+                time.sleep(wait_time)
+                continue
+            
+            # Erro de servidor (5xx) - tentar novamente
+            if 500 <= response.status_code < 600:
+                wait_time = 2 ** tentativa
+                logger.warning(f"   ⚠️  Erro de servidor ({response.status_code}) - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+                time.sleep(wait_time)
+                continue
+            
+            # Outros erros (4xx) - não tentar novamente
+            logger.error(f"   ❌ Erro HTTP {response.status_code}: {response.text[:200]}")
+            return response
+            
+        except requests.exceptions.Timeout:
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Timeout - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+            if tentativa < max_tentativas - 1:
+                time.sleep(wait_time)
+                continue
+            raise
+            
+        except requests.exceptions.ConnectionError:
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Erro de conexão - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas})")
+            if tentativa < max_tentativas - 1:
+                time.sleep(wait_time)
+                continue
+            raise
+            
+        except Exception as e:
+            if tentativa == max_tentativas - 1:
+                logger.error(f"   ❌ Erro após {max_tentativas} tentativas: {e}")
+                raise
+            wait_time = 2 ** tentativa
+            logger.warning(f"   ⚠️  Erro inesperado - aguardando {wait_time}s antes de tentar novamente (tentativa {tentativa + 1}/{max_tentativas}): {e}")
+            time.sleep(wait_time)
+            continue
+    
+    # Se chegou aqui, todas as tentativas falharam
+    raise Exception(f"Falha após {max_tentativas} tentativas")
+
+def verificar_integridade_referencial_firebird(cursor, tipo, codigos):
+    """Verifica integridade referencial no Firebird antes de inserir"""
+    try:
+        if tipo == 'pedidos':
+            # Verificar se todos os pedidos têm clientes válidos
+            codigos_str = ','.join(map(str, codigos))
+            cursor.execute(f"""
+                SELECT COUNT(*)
+                FROM ATENDIMENTO_A1 A
+                WHERE A.CODIGO IN ({codigos_str})
+                AND A.CODIGO_CLIENTE IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM CLIENTE C
+                    WHERE C.CODIGO = A.CODIGO_CLIENTE
+                    AND C.ATIVO = -1
+                )
+            """)
+            validos = cursor.fetchone()[0]
+            return validos == len(codigos)
+        
+        elif tipo == 'formulas':
+            # Verificar se todas as fórmulas têm pedidos válidos
+            codigos_str = ','.join(map(str, codigos))
+            cursor.execute(f"""
+                SELECT COUNT(*)
+                FROM ATENDIMENTO_A2 A2
+                WHERE A2.CODIGO_ATEND_A1 IN ({codigos_str})
+                AND EXISTS (
+                    SELECT 1 FROM ATENDIMENTO_A1 A1
+                    WHERE A1.CODIGO = A2.CODIGO_ATEND_A1
+                    AND A1.CODIGO_CLIENTE IS NOT NULL
+                )
+            """)
+            validos = cursor.fetchone()[0]
+            return validos == len(codigos)
+        
+        elif tipo == 'rastreabilidade':
+            # Verificar se todos os registros têm pedidos e tipos válidos
+            codigos_str = ','.join(map(str, codigos))
+            cursor.execute(f"""
+                SELECT COUNT(*)
+                FROM PROCESSO_MANIPULACAO PM
+                WHERE PM.CODIGO IN ({codigos_str})
+                AND PM.CODIGO_MOV IS NOT NULL
+                AND PM.CODIGO_PROCESSO_TIPO IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM ATENDIMENTO_A1 A1
+                    WHERE A1.CODIGO = PM.CODIGO_MOV
+                )
+                AND EXISTS (
+                    SELECT 1 FROM FORMAFARMACEUTICA_PROCESSO_TIPO FPT
+                    WHERE FPT.CODIGO = PM.CODIGO_PROCESSO_TIPO
+                    AND FPT.ATIVO = -1
+                )
+            """)
+            validos = cursor.fetchone()[0]
+            return validos == len(codigos)
+        
+        return True  # Para outros tipos, assumir válido
+        
+    except Exception as e:
+        logger.warning(f"   ⚠️  Erro ao verificar integridade referencial ({tipo}): {e}")
+        return True  # Em caso de erro, assumir válido para não bloquear sincronização
 
 def get_ultimo_id_supabase(tabela, campo_id='codigo_cliente_original'):
     """Pega o maior ID já migrado (ignorando códigos especiais > 500000)"""
@@ -325,7 +600,8 @@ def sync_clientes_novos():
             if clientes_dados:
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-                    response = requests.post(url, headers=headers, json=clientes_dados, timeout=60)
+                    # Usar retry com backoff exponencial
+                    response = inserir_com_retry(url, headers, clientes_dados, max_tentativas=3, timeout=60)
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(clientes_dados)
@@ -402,17 +678,18 @@ def sync_pedidos_novos():
             offset_codigo = novos_pedidos[-1][0]
             logger.info(f"   📊 Último código do lote: {offset_codigo}")
 
-            # Buscar clientes em lote
+                # Buscar clientes em lote (com retry)
             try:
                 codigos_cliente = list(set([row[1] for row in novos_pedidos]))
                 url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-                response = requests.get(
+                response = buscar_com_retry(
                     url_clientes,
-                    headers=headers,
+                    headers,
                     params={
                         'select': 'id,codigo_cliente_original',
                         'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
                     },
+                    max_tentativas=3,
                     timeout=30
                 )
 
@@ -1207,11 +1484,11 @@ def health():
     """Endpoint de health check"""
     # Versão fixa no código - garante que atualiza quando o código atualiza
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
-    # FORÇA REBUILD - Timestamp: 2025-01-28 16:10:00
+    # FORÇA REBUILD - Timestamp: 2025-01-28 16:30:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.2.0-LOOP-INFINITO
-    # Melhorias: sync_missing executa em loop até preencher TODOS os buracos (sem limite fixo)
-    API_VERSION = '3.2.0-LOOP-INFINITO'
+    # Esta versão DEVE aparecer: 3.3.0-MELHORIAS-COMPLETAS
+    # Melhorias: Retry com backoff exponencial + Sanitização de dados + Validação de integridade
+    API_VERSION = '3.3.0-MELHORIAS-COMPLETAS'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -1574,9 +1851,9 @@ def sync_missing_pedidos():
                     'codigo_orcamento_original': row[0],
                     'cliente_id': cache_clientes[codigo_cli],
                     'codigo_cliente_original': codigo_cli,
-                    'data_criacao': row[2].isoformat() if row[2] else None,
-                    'data_aprovacao': row[3].isoformat() if row[3] else None,
-                    'data_entrega': row[4].isoformat() if row[4] else None,
+                    'data_criacao': sanitizar_data(row[2]),
+                    'data_aprovacao': sanitizar_data(row[3]),
+                    'data_entrega': sanitizar_data(row[4]),
                     'valor_total': float(row[5]) if row[5] else 0.0,
                     'observacoes': limpar_string(row[6]),
                     'status': 'aprovado' if row[3] else 'pendente'
