@@ -746,7 +746,8 @@ def sync_pedidos_novos():
             if pedidos_dados:
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-                    response = requests.post(url, headers=headers, json=pedidos_dados, timeout=60)
+                    # Usar retry com backoff exponencial
+                    response = inserir_com_retry(url, headers, pedidos_dados, max_tentativas=3, timeout=60)
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(pedidos_dados)
@@ -894,7 +895,8 @@ def sync_formulas_novas():
             if formulas_dados:
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
-                    response = requests.post(url, headers=headers, json=formulas_dados, timeout=60)
+                    # Usar retry com backoff exponencial
+                    response = inserir_com_retry(url, headers, formulas_dados, max_tentativas=3, timeout=60)
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(formulas_dados)
@@ -1093,7 +1095,8 @@ def sync_formulas_itens_novos():
                     headers_insert['Prefer'] = 'resolution=ignore-duplicates'
                     
                     url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
-                    response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
+                    # Usar retry com backoff exponencial
+                    response = inserir_com_retry(url, headers_insert, itens_dados, max_tentativas=3, timeout=60)
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(itens_dados)
@@ -1298,7 +1301,8 @@ def sync_rastreabilidade_nova():
             if rastreabilidade_dados:
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
-                    response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
+                    # Usar retry com backoff exponencial
+                    response = inserir_com_retry(url, headers, rastreabilidade_dados, max_tentativas=3, timeout=60)
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(rastreabilidade_dados)
