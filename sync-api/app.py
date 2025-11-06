@@ -1207,10 +1207,11 @@ def health():
     """Endpoint de health check"""
     # Versão fixa no código - garante que atualiza quando o código atualiza
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
-    # FORÇA REBUILD - Timestamp: 2025-01-28 15:30:00
+    # FORÇA REBUILD - Timestamp: 2025-01-28 16:00:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.0.0-FORCADO-AGORA-20250128
-    API_VERSION = '3.0.0-FORCADO-AGORA-20250128'
+    # Esta versão DEVE aparecer: 3.1.0-100-PERCENT
+    # Melhorias: sync_missing com logging detalhado e tratamento de erros melhorado
+    API_VERSION = '3.1.0-100-PERCENT'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -1561,9 +1562,12 @@ def sync_missing_pedidos():
 
             # Preparar dados
             pedidos_dados = []
+            pedidos_sem_cliente = 0
             for row in pedidos_faltantes:
                 codigo_cli = row[1]
                 if codigo_cli not in cache_clientes:
+                    pedidos_sem_cliente += 1
+                    logger.warning(f"   ⚠️  Pedido {row[0]} sem cliente {codigo_cli} no Supabase (pulando)")
                     continue
 
                 pedidos_dados.append({
@@ -1578,6 +1582,9 @@ def sync_missing_pedidos():
                     'status': 'aprovado' if row[3] else 'pendente'
                 })
 
+            if pedidos_sem_cliente > 0:
+                logger.warning(f"   ⚠️  Lote {i//1000 + 1}: {pedidos_sem_cliente} pedidos sem cliente (não inseridos)")
+            
             if pedidos_dados:
                 # Usar ignore-duplicates para evitar erro
                 headers_insert = headers.copy()
@@ -1593,11 +1600,20 @@ def sync_missing_pedidos():
                 if resp_insert.status_code in [200, 201]:
                     total_inseridos += len(pedidos_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(pedidos_dados)} pedidos inseridos")
+                else:
+                    logger.error(f"   ❌ Erro ao inserir lote {i//1000 + 1}: Status {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:500]}")
 
         conn.close()
+        
+        if len(faltantes) > total_inseridos:
+            faltaram = len(faltantes) - total_inseridos
+            logger.warning(f"   ⚠️  {faltaram} pedidos não foram inseridos (provavelmente faltam dependências)")
+        
         return {
             'inseridos': total_inseridos,
-            'mensagem': f'{total_inseridos} pedidos faltantes sincronizados'
+            'total_faltantes': len(faltantes),
+            'mensagem': f'{total_inseridos} de {len(faltantes)} pedidos faltantes sincronizados'
         }
 
     except Exception as e:
@@ -1710,10 +1726,13 @@ def sync_missing_formulas():
 
             # Preparar dados
             formulas_dados = []
+            formulas_sem_pedido = 0
             for row in formulas_faltantes:
                 codigo_atend, num_formula = row[0], row[1]
                 pedido_id = cache_pedidos.get(codigo_atend)
                 if not pedido_id:
+                    formulas_sem_pedido += 1
+                    logger.warning(f"   ⚠️  Fórmula ({codigo_atend}, {num_formula}) sem pedido no Supabase (pulando)")
                     continue
 
                 formulas_dados.append({
@@ -1726,6 +1745,9 @@ def sync_missing_formulas():
                     'updated_at': datetime.now().isoformat()
                 })
 
+            if formulas_sem_pedido > 0:
+                logger.warning(f"   ⚠️  Lote {i//1000 + 1}: {formulas_sem_pedido} fórmulas sem pedido (não inseridas)")
+            
             if formulas_dados:
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
@@ -1740,11 +1762,20 @@ def sync_missing_formulas():
                 if resp_insert.status_code in [200, 201]:
                     total_inseridos += len(formulas_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(formulas_dados)} fórmulas inseridas")
+                else:
+                    logger.error(f"   ❌ Erro ao inserir lote {i//1000 + 1}: Status {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:500]}")
 
         conn.close()
+        
+        if len(faltantes) > total_inseridos:
+            faltaram = len(faltantes) - total_inseridos
+            logger.warning(f"   ⚠️  {faltaram} fórmulas não foram inseridas (provavelmente faltam dependências)")
+        
         return {
             'inseridos': total_inseridos,
-            'mensagem': f'{total_inseridos} fórmulas faltantes sincronizadas'
+            'total_faltantes': len(faltantes),
+            'mensagem': f'{total_inseridos} de {len(faltantes)} fórmulas faltantes sincronizadas'
         }
 
     except Exception as e:
@@ -1872,6 +1903,7 @@ def sync_missing_rastreabilidade():
 
             # Preparar dados
             rastros_dados = []
+            rastros_sem_dependencias = 0
             for row in rastros_faltantes:
                 codigo_orcamento = row[2]
                 codigo_tipo = row[3]
@@ -1880,6 +1912,9 @@ def sync_missing_rastreabilidade():
                 tipo_processo_id = cache_tipos.get(codigo_tipo)
 
                 if not pedido_id or not tipo_processo_id:
+                    rastros_sem_dependencias += 1
+                    if rastros_sem_dependencias <= 5:  # Logar apenas os primeiros 5 para não poluir
+                        logger.warning(f"   ⚠️  Rastreabilidade {row[0]} sem pedido {codigo_orcamento} ou tipo {codigo_tipo} (pulando)")
                     continue
 
                 rastros_dados.append({
@@ -1897,6 +1932,9 @@ def sync_missing_rastreabilidade():
                     'updated_at': datetime.now().isoformat()
                 })
 
+            if rastros_sem_dependencias > 0:
+                logger.warning(f"   ⚠️  Lote {i//1000 + 1}: {rastros_sem_dependencias} registros sem dependências (não inseridos)")
+            
             if rastros_dados:
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
@@ -1911,11 +1949,20 @@ def sync_missing_rastreabilidade():
                 if resp_insert.status_code in [200, 201]:
                     total_inseridos += len(rastros_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(rastros_dados)} registros inseridos")
+                else:
+                    logger.error(f"   ❌ Erro ao inserir lote {i//1000 + 1}: Status {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:500]}")
 
         conn.close()
+        
+        if len(faltantes) > total_inseridos:
+            faltaram = len(faltantes) - total_inseridos
+            logger.warning(f"   ⚠️  {faltaram} registros não foram inseridos (provavelmente faltam dependências)")
+        
         return {
             'inseridos': total_inseridos,
-            'mensagem': f'{total_inseridos} registros faltantes sincronizados'
+            'total_faltantes': len(faltantes),
+            'mensagem': f'{total_inseridos} de {len(faltantes)} registros faltantes sincronizados'
         }
 
     except Exception as e:
@@ -2047,6 +2094,7 @@ def sync_missing_formulas_itens():
             itens_fb_dados = cursor.fetchall()
             faltantes_set = set(lote)
             batch_insert = []
+            itens_sem_formula = 0
 
             for row in itens_fb_dados:
                 cod, num, lin, cod_prod, nome, qtd, unid, custo, venda, obs = row
@@ -2056,6 +2104,9 @@ def sync_missing_formulas_itens():
 
                 formula_info = cache_formulas.get((cod, num))
                 if not formula_info:
+                    itens_sem_formula += 1
+                    if itens_sem_formula <= 5:  # Logar apenas os primeiros 5
+                        logger.warning(f"   ⚠️  Item ({cod}, {num}, {lin}) sem fórmula no Supabase (pulando)")
                     continue
 
                 batch_insert.append({
@@ -2092,11 +2143,23 @@ def sync_missing_formulas_itens():
                 if resp_insert.status_code in [200, 201]:
                     total_inseridos += len(batch_insert)
                     logger.info(f"   ✅ Lote {i//100 + 1}: {len(batch_insert)} itens inseridos")
+                else:
+                    logger.error(f"   ❌ Erro ao inserir lote {i//100 + 1}: Status {resp_insert.status_code}")
+                    logger.error(f"   Resposta: {resp_insert.text[:500]}")
+            
+            if itens_sem_formula > 0:
+                logger.warning(f"   ⚠️  Lote {i//100 + 1}: {itens_sem_formula} itens sem fórmula (não inseridos)")
 
         conn.close()
+        
+        if len(faltantes) > total_inseridos:
+            faltaram = len(faltantes) - total_inseridos
+            logger.warning(f"   ⚠️  {faltaram} itens não foram inseridos (provavelmente faltam dependências)")
+        
         return {
             'inseridos': total_inseridos,
-            'mensagem': f'{total_inseridos} itens faltantes sincronizados'
+            'total_faltantes': len(faltantes),
+            'mensagem': f'{total_inseridos} de {len(faltantes)} itens faltantes sincronizados'
         }
 
     except Exception as e:
