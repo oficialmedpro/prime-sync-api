@@ -1205,8 +1205,9 @@ def sync_tipos_processo_novos():
 @app.route('/health', methods=['GET'])
 def health():
     """Endpoint de health check"""
-    # Versão via variável de ambiente - não precisa editar código
-    API_VERSION = os.getenv('API_VERSION', '2.0.9')
+    # Versão fixa no código - garante que atualiza quando o código atualiza
+    # Commit: 01e5c2f - Melhoria: sync_missing compara TODOS os registros + sync_missing_formulas_itens
+    API_VERSION = '2.1.0'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -2360,8 +2361,9 @@ def sync():
             }
         )
 
-        # Versão via variável de ambiente - não precisa editar código
-        API_VERSION = os.getenv('API_VERSION', '2.0.9')
+        # Versão fixa no código - garante que atualiza quando o código atualiza
+        # Commit: 01e5c2f - Melhoria: sync_missing compara TODOS os registros + sync_missing_formulas_itens
+        API_VERSION = '2.1.0'
         resultado = {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
