@@ -1272,26 +1272,24 @@ def sync_missing_clientes():
                 break
 
         codigos_sb = set(todos_clientes_sb)
-        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
 
-        logger.info(f"   {len(codigos_sb)} clientes já sincronizados (max: {max_codigo_sb})")
+        logger.info(f"   {len(codigos_sb)} clientes já sincronizados")
 
-        # Buscar todos clientes do Firebird até o max_codigo_sb
+        # Buscar TODOS os clientes do Firebird (sem limitação de max_codigo)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO
             FROM CLIENTE
             WHERE ATIVO = -1
             AND CODIGO < 500000
-            AND CODIGO <= {max_codigo_sb}
             ORDER BY CODIGO
         """)
 
         todos_clientes_fb = [row[0] for row in cursor.fetchall()]
         codigos_fb = set(todos_clientes_fb)
 
-        logger.info(f"   {len(codigos_fb)} clientes no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   {len(codigos_fb)} clientes no Firebird")
 
         # Encontrar buracos
         faltantes = codigos_fb - codigos_sb
@@ -1490,25 +1488,23 @@ def sync_missing_pedidos():
                 break
 
         codigos_sb = set(todos_pedidos_sb)
-        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
 
-        logger.info(f"   {len(codigos_sb)} pedidos já sincronizados (max: {max_codigo_sb})")
+        logger.info(f"   {len(codigos_sb)} pedidos já sincronizados")
 
-        # Buscar todos pedidos do Firebird até o max_codigo_sb
+        # Buscar TODOS os pedidos do Firebird (sem limitação de max_codigo)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO
             FROM ATENDIMENTO_A1
             WHERE CODIGO_CLIENTE IS NOT NULL
-            AND CODIGO <= {max_codigo_sb}
             ORDER BY CODIGO
         """)
 
         todos_pedidos_fb = [row[0] for row in cursor.fetchall()]
         codigos_fb = set(todos_pedidos_fb)
 
-        logger.info(f"   {len(codigos_fb)} pedidos no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   {len(codigos_fb)} pedidos no Firebird")
 
         # Encontrar buracos
         faltantes = codigos_fb - codigos_sb
@@ -1639,25 +1635,23 @@ def sync_missing_formulas():
                 break
 
         formulas_sb = set(todas_formulas_sb)
-        max_codigo_sb = max([f[0] for f in formulas_sb]) if formulas_sb else 0
 
-        logger.info(f"   {len(formulas_sb)} fórmulas já sincronizadas (max pedido: {max_codigo_sb})")
+        logger.info(f"   {len(formulas_sb)} fórmulas já sincronizadas")
 
-        # Buscar todas fórmulas do Firebird até o max_codigo_sb
+        # Buscar TODAS as fórmulas do Firebird (sem limitação de max_codigo)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO_ATEND_A1, NUMEROFORMULA
             FROM ATENDIMENTO_A2
             WHERE CODIGO_ATEND_A1 IS NOT NULL
-            AND CODIGO_ATEND_A1 <= {max_codigo_sb}
             ORDER BY CODIGO_ATEND_A1, NUMEROFORMULA
         """)
 
         todas_formulas_fb = [(row[0], row[1]) for row in cursor.fetchall()]
         formulas_fb = set(todas_formulas_fb)
 
-        logger.info(f"   {len(formulas_fb)} fórmulas no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   {len(formulas_fb)} fórmulas no Firebird")
 
         # Encontrar buracos
         faltantes = formulas_fb - formulas_sb
@@ -1788,24 +1782,22 @@ def sync_missing_rastreabilidade():
                 break
 
         codigos_sb = set(todos_rastros_sb)
-        max_codigo_sb = max(codigos_sb) if codigos_sb else 0
 
-        logger.info(f"   {len(codigos_sb)} registros já sincronizados (max: {max_codigo_sb})")
+        logger.info(f"   {len(codigos_sb)} registros já sincronizados")
 
-        # Buscar todos registros do Firebird até o max_codigo_sb
+        # Buscar TODOS os registros do Firebird (sem limitação de max_codigo)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO
             FROM PROCESSO_MANIPULACAO
-            WHERE CODIGO <= {max_codigo_sb}
             ORDER BY CODIGO
         """)
 
         todos_rastros_fb = [row[0] for row in cursor.fetchall()]
         codigos_fb = set(todos_rastros_fb)
 
-        logger.info(f"   {len(codigos_fb)} registros no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   {len(codigos_fb)} registros no Firebird")
 
         # Encontrar buracos
         faltantes = codigos_fb - codigos_sb
@@ -1928,6 +1920,187 @@ def sync_missing_rastreabilidade():
         logger.error(f"   Stack trace: {traceback.format_exc()}")
         return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
 
+def sync_missing_formulas_itens():
+    """Sincroniza itens de fórmulas faltantes (buracos)"""
+    try:
+        logger.info("🔍 Buscando itens de fórmulas faltantes...")
+
+        # Pegar todos itens já no Supabase (codigo_atendimento + numero_formula + numero_linha)
+        todos_itens_sb = []
+        offset = 0
+        limit = 1000
+
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
+                headers=headers,
+                params={
+                    'select': 'codigo_atendimento_original,numero_formula,numero_linha',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_atendimento_original.asc,numero_formula.asc,numero_linha.asc'
+                },
+                timeout=30
+            )
+
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                todos_itens_sb.extend([(d['codigo_atendimento_original'], d['numero_formula'], d['numero_linha']) for d in dados])
+                offset += limit
+                if len(dados) < limit:
+                    break
+            else:
+                break
+
+        itens_sb = set(todos_itens_sb)
+
+        logger.info(f"   {len(itens_sb)} itens já sincronizados")
+
+        # Buscar TODOS os itens do Firebird (sem limitação)
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT CODIGO_ATEND_A1, NUMEROFORMULA, NUMEROLINHA
+            FROM ATENDIMENTO_A3
+            WHERE CODIGO_ATEND_A1 IS NOT NULL
+            ORDER BY CODIGO_ATEND_A1, NUMEROFORMULA, NUMEROLINHA
+        """)
+
+        todos_itens_fb = [(row[0], row[1], row[2]) for row in cursor.fetchall()]
+        itens_fb = set(todos_itens_fb)
+
+        logger.info(f"   {len(itens_fb)} itens no Firebird")
+
+        # Encontrar buracos
+        faltantes = itens_fb - itens_sb
+
+        if not faltantes:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhum item faltante'}
+
+        logger.info(f"   🔴 {len(faltantes)} itens FALTANTES identificados!")
+
+        # Buscar cache de fórmulas (uma vez só)
+        logger.info("   Carregando cache de fórmulas...")
+        cache_formulas = {}
+        offset = 0
+        while True:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                headers=headers,
+                params={
+                    'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                    'limit': limit,
+                    'offset': offset,
+                    'order': 'codigo_orcamento_original.asc,numero_formula.asc'
+                },
+                timeout=30
+            )
+            if resp.status_code == 200:
+                dados = resp.json()
+                if not dados:
+                    break
+                for f in dados:
+                    cache_formulas[(f['codigo_orcamento_original'], f['numero_formula'])] = {
+                        'id': f['id'],
+                        'pedido_id': f['pedido_id']
+                    }
+                offset += limit
+                if len(dados) < limit:
+                    break
+            else:
+                break
+        logger.info(f"   Cache fórmulas: {len(cache_formulas)} fórmulas")
+
+        # Buscar dados dos itens faltantes (em lotes de 100)
+        faltantes_list = sorted(list(faltantes))
+        total_inseridos = 0
+
+        for i in range(0, len(faltantes_list), 100):
+            lote = faltantes_list[i:i+100]
+            codigos_str = ','.join(map(str, [cod for cod, _, _ in lote]))
+            
+            # Buscar todos itens desses códigos
+            cursor.execute(f"""
+                SELECT
+                    A3.CODIGO_ATEND_A1,
+                    A3.NUMEROFORMULA,
+                    A3.NUMEROLINHA,
+                    A3.CODIGO_PRODUTO,
+                    EG.NOMEPRODUTO,
+                    A3.QUANTIDADE,
+                    A3.UNIDADE,
+                    A3.VALORCUSTO,
+                    A3.VALORVENDA,
+                    A3.OBSERVACAO
+                FROM ATENDIMENTO_A3 A3
+                LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
+                WHERE A3.CODIGO_ATEND_A1 IN ({codigos_str})
+            """)
+
+            itens_fb_dados = cursor.fetchall()
+            faltantes_set = set(lote)
+            batch_insert = []
+
+            for row in itens_fb_dados:
+                cod, num, lin, cod_prod, nome, qtd, unid, custo, venda, obs = row
+                # Verificar se este item está na lista de faltantes
+                if (cod, num, lin) not in faltantes_set:
+                    continue
+
+                formula_info = cache_formulas.get((cod, num))
+                if not formula_info:
+                    continue
+
+                batch_insert.append({
+                    'formula_id': formula_info['id'],
+                    'pedido_id': formula_info['pedido_id'],
+                    'codigo_atendimento_original': cod,
+                    'numero_formula': num,
+                    'numero_linha': lin,
+                    'codigo_produto': cod_prod,
+                    'nome_produto': limpar_string(nome) or 'PRODUTO NAO IDENTIFICADO',
+                    'quantidade': float(qtd) if qtd else None,
+                    'unidade': limpar_string(unid),
+                    'quantidade_calculo': float(qtd) if qtd else None,
+                    'valor_custo': float(custo) if custo else 0.0,
+                    'valor_venda': float(venda) if venda else 0.0,
+                    'valor_venda_desconto': 0.0,
+                    'inclusao_sistema': True,
+                    'visualizar_produto': True,
+                    'observacao': limpar_string(obs),
+                    'updated_at': datetime.now().isoformat()
+                })
+
+            if batch_insert:
+                headers_insert = headers.copy()
+                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+
+                resp_insert = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
+                    headers=headers_insert,
+                    json=batch_insert,
+                    timeout=60
+                )
+
+                if resp_insert.status_code in [200, 201]:
+                    total_inseridos += len(batch_insert)
+                    logger.info(f"   ✅ Lote {i//100 + 1}: {len(batch_insert)} itens inseridos")
+
+        conn.close()
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} itens faltantes sincronizados'
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Erro em sync_missing_formulas_itens: {e}", exc_info=True)
+        import traceback
+        logger.error(f"   Stack trace: {traceback.format_exc()}")
+        return {'inseridos': 0, 'erro': str(e), 'traceback': traceback.format_exc()}
+
 @app.route('/sync-missing', methods=['POST'])
 def sync_missing():
     """Endpoint para sincronizar registros faltantes"""
@@ -1997,11 +2170,10 @@ def sync():
             logger.info("="*70)
             try:
                 result_clientes_missing = sync_missing_clientes()
-                if result_clientes_missing.get('inseridos', 0) > 0:
-                    logger.info(f"✅ Clientess faltantes sincronizados: {result_clientes_missing}")
-                    # Adicionar ao total de clientes
-                    result_clientes['inseridos'] = result_clientes.get('inseridos', 0) + result_clientes_missing.get('inseridos', 0)
-                    result_clientes['faltantes_sincronizados'] = result_clientes_missing.get('inseridos', 0)
+                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
+                logger.info(f"✅ Clientes faltantes: {result_clientes_missing.get('inseridos', 0)} sincronizados")
+                result_clientes['inseridos'] = result_clientes.get('inseridos', 0) + result_clientes_missing.get('inseridos', 0)
+                result_clientes['faltantes_sincronizados'] = result_clientes_missing.get('inseridos', 0)
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao sincronizar clientes faltantes (continuando): {e}")
                 
@@ -2025,11 +2197,10 @@ def sync():
             logger.info("="*70)
             try:
                 result_pedidos_missing = sync_missing_pedidos()
-                if result_pedidos_missing.get('inseridos', 0) > 0:
-                    logger.info(f"✅ Pedidos faltantes sincronizados: {result_pedidos_missing}")
-                    # Adicionar ao total de pedidos
-                    result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + result_pedidos_missing.get('inseridos', 0)
-                    result_pedidos['faltantes_sincronizados'] = result_pedidos_missing.get('inseridos', 0)
+                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
+                logger.info(f"✅ Pedidos faltantes: {result_pedidos_missing.get('inseridos', 0)} sincronizados")
+                result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + result_pedidos_missing.get('inseridos', 0)
+                result_pedidos['faltantes_sincronizados'] = result_pedidos_missing.get('inseridos', 0)
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes (continuando): {e}")
                 
@@ -2053,10 +2224,10 @@ def sync():
             logger.info("="*70)
             try:
                 result_formulas_missing = sync_missing_formulas()
-                if result_formulas_missing.get('inseridos', 0) > 0:
-                    logger.info(f"✅ Fórmulas faltantes sincronizadas: {result_formulas_missing}")
-                    result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + result_formulas_missing.get('inseridos', 0)
-                    result_formulas['faltantes_sincronizados'] = result_formulas_missing.get('inseridos', 0)
+                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
+                logger.info(f"✅ Fórmulas faltantes: {result_formulas_missing.get('inseridos', 0)} sincronizadas")
+                result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + result_formulas_missing.get('inseridos', 0)
+                result_formulas['faltantes_sincronizados'] = result_formulas_missing.get('inseridos', 0)
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes (continuando): {e}")
         except Exception as e:
@@ -2072,6 +2243,19 @@ def sync():
             logger.info(f"📋 Itens: {result_itens}")
             if result_itens.get('erro'):
                 logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
+            
+            # AUTOMATICAMENTE sincronizar itens faltantes após sincronização incremental
+            logger.info("\n" + "="*70)
+            logger.info("4️⃣.1 SINCRONIZANDO ITENS FALTANTES (auto-correção)")
+            logger.info("="*70)
+            try:
+                result_itens_missing = sync_missing_formulas_itens()
+                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
+                logger.info(f"✅ Itens faltantes: {result_itens_missing.get('inseridos', 0)} sincronizados")
+                result_itens['inseridos'] = result_itens.get('inseridos', 0) + result_itens_missing.get('inseridos', 0)
+                result_itens['faltantes_sincronizados'] = result_itens_missing.get('inseridos', 0)
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao sincronizar itens faltantes (continuando): {e}")
         except Exception as e:
             logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
             result_itens = {'inseridos': 0, 'erro': str(e)}
@@ -2108,10 +2292,10 @@ def sync():
             logger.info("="*70)
             try:
                 result_rastreabilidade_missing = sync_missing_rastreabilidade()
-                if result_rastreabilidade_missing.get('inseridos', 0) > 0:
-                    logger.info(f"✅ Rastreabilidade faltante sincronizada: {result_rastreabilidade_missing}")
-                    result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + result_rastreabilidade_missing.get('inseridos', 0)
-                    result_rastreabilidade['faltantes_sincronizados'] = result_rastreabilidade_missing.get('inseridos', 0)
+                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
+                logger.info(f"✅ Rastreabilidade faltante: {result_rastreabilidade_missing.get('inseridos', 0)} sincronizada")
+                result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + result_rastreabilidade_missing.get('inseridos', 0)
+                result_rastreabilidade['faltantes_sincronizados'] = result_rastreabilidade_missing.get('inseridos', 0)
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante (continuando): {e}")
         except Exception as e:
