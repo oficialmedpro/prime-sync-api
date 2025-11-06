@@ -1,3 +1,5 @@
+# FORÇA REBUILD - Timestamp: 2025-01-28 15:30:00
+# Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
 # Imagem base Python
 FROM python:3.11-slim
 
