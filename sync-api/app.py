@@ -1207,11 +1207,11 @@ def health():
     """Endpoint de health check"""
     # Versão fixa no código - garante que atualiza quando o código atualiza
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
-    # FORÇA REBUILD - Timestamp: 2025-01-28 16:00:00
+    # FORÇA REBUILD - Timestamp: 2025-01-28 16:10:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.1.0-100-PERCENT
-    # Melhorias: sync_missing com logging detalhado e tratamento de erros melhorado
-    API_VERSION = '3.1.0-100-PERCENT'
+    # Esta versão DEVE aparecer: 3.2.0-LOOP-INFINITO
+    # Melhorias: sync_missing executa em loop até preencher TODOS os buracos (sem limite fixo)
+    API_VERSION = '3.2.0-LOOP-INFINITO'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -2259,28 +2259,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
             
             # AUTOMATICAMENTE sincronizar pedidos faltantes após sincronização incremental
-            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
+            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
             logger.info("\n" + "="*70)
             logger.info("2️⃣.1 SINCRONIZANDO PEDIDOS FALTANTES (auto-correção)")
             logger.info("="*70)
-            max_iteracoes = 3
+            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_pedidos_missing = 0
             
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
-                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    logger.info(f"   Iteração {iteracao}...")
                     result_pedidos_missing = sync_missing_pedidos()
                     inseridos_iteracao = result_pedidos_missing.get('inseridos', 0)
+                    total_faltantes = result_pedidos_missing.get('total_faltantes', 0)
                     total_pedidos_missing += inseridos_iteracao
                     
-                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} pedidos sincronizados")
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} pedidos sincronizados (faltantes: {total_faltantes})")
                     
-                    # Se não inseriu nada nesta iteração, parar
-                    if inseridos_iteracao == 0:
-                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
+                    if inseridos_iteracao == 0 and total_faltantes == 0:
+                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
+                    
+                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
+                    if inseridos_iteracao == 0 and total_faltantes > 0:
+                        logger.warning(f"   ⚠️  {total_faltantes} pedidos ainda faltam (provavelmente faltam dependências) - continuando...")
+                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2303,28 +2309,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
             
             # AUTOMATICAMENTE sincronizar fórmulas faltantes após sincronização incremental
-            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
+            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
             logger.info("\n" + "="*70)
             logger.info("3️⃣.1 SINCRONIZANDO FÓRMULAS FALTANTES (auto-correção)")
             logger.info("="*70)
-            max_iteracoes = 3
+            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_formulas_missing = 0
             
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
-                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    logger.info(f"   Iteração {iteracao}...")
                     result_formulas_missing = sync_missing_formulas()
                     inseridos_iteracao = result_formulas_missing.get('inseridos', 0)
+                    total_faltantes = result_formulas_missing.get('total_faltantes', 0)
                     total_formulas_missing += inseridos_iteracao
                     
-                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} fórmulas sincronizadas")
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} fórmulas sincronizadas (faltantes: {total_faltantes})")
                     
-                    # Se não inseriu nada nesta iteração, parar
-                    if inseridos_iteracao == 0:
-                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
+                    if inseridos_iteracao == 0 and total_faltantes == 0:
+                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
+                    
+                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
+                    if inseridos_iteracao == 0 and total_faltantes > 0:
+                        logger.warning(f"   ⚠️  {total_faltantes} fórmulas ainda faltam (provavelmente faltam dependências) - continuando...")
+                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2346,28 +2358,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
             
             # AUTOMATICAMENTE sincronizar itens faltantes após sincronização incremental
-            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
+            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
             logger.info("\n" + "="*70)
             logger.info("4️⃣.1 SINCRONIZANDO ITENS FALTANTES (auto-correção)")
             logger.info("="*70)
-            max_iteracoes = 3
+            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_itens_missing = 0
             
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
-                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    logger.info(f"   Iteração {iteracao}...")
                     result_itens_missing = sync_missing_formulas_itens()
                     inseridos_iteracao = result_itens_missing.get('inseridos', 0)
+                    total_faltantes = result_itens_missing.get('total_faltantes', 0)
                     total_itens_missing += inseridos_iteracao
                     
-                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} itens sincronizados")
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} itens sincronizados (faltantes: {total_faltantes})")
                     
-                    # Se não inseriu nada nesta iteração, parar
-                    if inseridos_iteracao == 0:
-                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
+                    if inseridos_iteracao == 0 and total_faltantes == 0:
+                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
+                    
+                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
+                    if inseridos_iteracao == 0 and total_faltantes > 0:
+                        logger.warning(f"   ⚠️  {total_faltantes} itens ainda faltam (provavelmente faltam dependências) - continuando...")
+                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar itens faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2405,28 +2423,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
             
             # AUTOMATICAMENTE sincronizar rastreabilidade faltante após sincronização incremental
-            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 5 iterações)
+            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
             logger.info("\n" + "="*70)
             logger.info("6️⃣.1 SINCRONIZANDO RASTREABILIDADE FALTANTE (auto-correção)")
             logger.info("="*70)
-            max_iteracoes = 5
+            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_rastreabilidade_missing = 0
             
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
-                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    logger.info(f"   Iteração {iteracao}...")
                     result_rastreabilidade_missing = sync_missing_rastreabilidade()
                     inseridos_iteracao = result_rastreabilidade_missing.get('inseridos', 0)
+                    total_faltantes = result_rastreabilidade_missing.get('total_faltantes', 0)
                     total_rastreabilidade_missing += inseridos_iteracao
                     
-                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} registros sincronizados")
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} registros sincronizados (faltantes: {total_faltantes})")
                     
-                    # Se não inseriu nada nesta iteração, parar
-                    if inseridos_iteracao == 0:
-                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
+                    if inseridos_iteracao == 0 and total_faltantes == 0:
+                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
+                    
+                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
+                    if inseridos_iteracao == 0 and total_faltantes > 0:
+                        logger.warning(f"   ⚠️  {total_faltantes} registros ainda faltam (provavelmente faltam dependências) - continuando...")
+                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante na iteração {iteracao} (continuando): {e}")
                     break
