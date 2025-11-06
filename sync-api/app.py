@@ -1709,10 +1709,12 @@ def sync_missing_clientes():
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
 
-                resp_insert = requests.post(
+                # Usar retry com backoff exponencial
+                resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_clientes",
-                    headers=headers_insert,
-                    json=clientes_dados,
+                    headers_insert,
+                    clientes_dados,
+                    max_tentativas=3,
                     timeout=60
                 )
 
@@ -1871,10 +1873,12 @@ def sync_missing_pedidos():
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
 
-                resp_insert = requests.post(
+                # Usar retry com backoff exponencial
+                resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_pedidos",
-                    headers=headers_insert,
-                    json=pedidos_dados,
+                    headers_insert,
+                    pedidos_dados,
+                    max_tentativas=3,
                     timeout=60
                 )
 
@@ -2033,10 +2037,12 @@ def sync_missing_formulas():
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
 
-                resp_insert = requests.post(
+                # Usar retry com backoff exponencial
+                resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_formulas",
-                    headers=headers_insert,
-                    json=formulas_dados,
+                    headers_insert,
+                    formulas_dados,
+                    max_tentativas=3,
                     timeout=60
                 )
 
@@ -2220,10 +2226,12 @@ def sync_missing_rastreabilidade():
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
 
-                resp_insert = requests.post(
+                # Usar retry com backoff exponencial
+                resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade",
-                    headers=headers_insert,
-                    json=rastros_dados,
+                    headers_insert,
+                    rastros_dados,
+                    max_tentativas=3,
                     timeout=60
                 )
 
@@ -2414,10 +2422,12 @@ def sync_missing_formulas_itens():
                 headers_insert = headers.copy()
                 headers_insert['Prefer'] = 'resolution=ignore-duplicates'
 
-                resp_insert = requests.post(
+                # Usar retry com backoff exponencial
+                resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
-                    headers=headers_insert,
-                    json=batch_insert,
+                    headers_insert,
+                    batch_insert,
+                    max_tentativas=3,
                     timeout=60
                 )
 
