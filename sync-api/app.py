@@ -1488,11 +1488,11 @@ def health():
     """Endpoint de health check"""
     # Versão fixa no código - garante que atualiza quando o código atualiza
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
-    # FORÇA REBUILD - Timestamp: 2025-01-28 16:30:00
+    # FORÇA REBUILD - Timestamp: 2025-01-28 17:00:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.3.0-MELHORIAS-COMPLETAS
-    # Melhorias: Retry com backoff exponencial + Sanitização de dados + Validação de integridade
-    API_VERSION = '3.3.0-MELHORIAS-COMPLETAS'
+    # Esta versão DEVE aparecer: 3.4.0-FIX-STATUS-PEDIDOS
+    # Melhorias: Corrigido campo 'status' para 'status_aprovacao', 'status_entrega', 'status_geral'
+    API_VERSION = '3.4.0-FIX-STATUS-PEDIDOS'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -1853,16 +1853,32 @@ def sync_missing_pedidos():
                     logger.warning(f"   ⚠️  Pedido {row[0]} sem cliente {codigo_cli} no Supabase (pulando)")
                     continue
 
+                # Calcular status corretamente (mesmo padrão de sync_pedidos_novos)
+                aviada_dt = row[3]
+                entregue_dt = row[4]
+                
+                status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
+                status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
+                
+                if entregue_dt:
+                    status_geral = 'ENTREGUE'
+                elif aviada_dt:
+                    status_geral = 'APROVADO'
+                else:
+                    status_geral = 'PENDENTE'
+                
                 pedidos_dados.append({
                     'codigo_orcamento_original': row[0],
                     'cliente_id': cache_clientes[codigo_cli],
                     'codigo_cliente_original': codigo_cli,
                     'data_criacao': sanitizar_data(row[2]),
-                    'data_aprovacao': sanitizar_data(row[3]),
-                    'data_entrega': sanitizar_data(row[4]),
+                    'data_aprovacao': sanitizar_data(aviada_dt),
+                    'data_entrega': sanitizar_data(entregue_dt),
                     'valor_total': float(row[5]) if row[5] else 0.0,
-                    'observacoes': limpar_string(row[6]),
-                    'status': 'aprovado' if row[3] else 'pendente'
+                    'observacoes': sanitizar_string(row[6], max_length=1000),
+                    'status_aprovacao': status_aprovacao,
+                    'status_entrega': status_entrega,
+                    'status_geral': status_geral
                 })
 
             if pedidos_sem_cliente > 0:
