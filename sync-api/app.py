@@ -2259,17 +2259,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
             
             # AUTOMATICAMENTE sincronizar pedidos faltantes após sincronização incremental
+            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
             logger.info("\n" + "="*70)
             logger.info("2️⃣.1 SINCRONIZANDO PEDIDOS FALTANTES (auto-correção)")
             logger.info("="*70)
-            try:
-                result_pedidos_missing = sync_missing_pedidos()
-                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
-                logger.info(f"✅ Pedidos faltantes: {result_pedidos_missing.get('inseridos', 0)} sincronizados")
-                result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + result_pedidos_missing.get('inseridos', 0)
-                result_pedidos['faltantes_sincronizados'] = result_pedidos_missing.get('inseridos', 0)
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes (continuando): {e}")
+            max_iteracoes = 3
+            iteracao = 0
+            total_pedidos_missing = 0
+            
+            while iteracao < max_iteracoes:
+                iteracao += 1
+                try:
+                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    result_pedidos_missing = sync_missing_pedidos()
+                    inseridos_iteracao = result_pedidos_missing.get('inseridos', 0)
+                    total_pedidos_missing += inseridos_iteracao
+                    
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} pedidos sincronizados")
+                    
+                    # Se não inseriu nada nesta iteração, parar
+                    if inseridos_iteracao == 0:
+                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                        break
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes na iteração {iteracao} (continuando): {e}")
+                    break
+            
+            result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + total_pedidos_missing
+            result_pedidos['faltantes_sincronizados'] = total_pedidos_missing
                 
         except Exception as e:
             logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
@@ -2286,17 +2303,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
             
             # AUTOMATICAMENTE sincronizar fórmulas faltantes após sincronização incremental
+            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
             logger.info("\n" + "="*70)
             logger.info("3️⃣.1 SINCRONIZANDO FÓRMULAS FALTANTES (auto-correção)")
             logger.info("="*70)
-            try:
-                result_formulas_missing = sync_missing_formulas()
-                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
-                logger.info(f"✅ Fórmulas faltantes: {result_formulas_missing.get('inseridos', 0)} sincronizadas")
-                result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + result_formulas_missing.get('inseridos', 0)
-                result_formulas['faltantes_sincronizados'] = result_formulas_missing.get('inseridos', 0)
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes (continuando): {e}")
+            max_iteracoes = 3
+            iteracao = 0
+            total_formulas_missing = 0
+            
+            while iteracao < max_iteracoes:
+                iteracao += 1
+                try:
+                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    result_formulas_missing = sync_missing_formulas()
+                    inseridos_iteracao = result_formulas_missing.get('inseridos', 0)
+                    total_formulas_missing += inseridos_iteracao
+                    
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} fórmulas sincronizadas")
+                    
+                    # Se não inseriu nada nesta iteração, parar
+                    if inseridos_iteracao == 0:
+                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                        break
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes na iteração {iteracao} (continuando): {e}")
+                    break
+            
+            result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + total_formulas_missing
+            result_formulas['faltantes_sincronizados'] = total_formulas_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
             result_formulas = {'inseridos': 0, 'erro': str(e)}
@@ -2312,17 +2346,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
             
             # AUTOMATICAMENTE sincronizar itens faltantes após sincronização incremental
+            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 3 iterações)
             logger.info("\n" + "="*70)
             logger.info("4️⃣.1 SINCRONIZANDO ITENS FALTANTES (auto-correção)")
             logger.info("="*70)
-            try:
-                result_itens_missing = sync_missing_formulas_itens()
-                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
-                logger.info(f"✅ Itens faltantes: {result_itens_missing.get('inseridos', 0)} sincronizados")
-                result_itens['inseridos'] = result_itens.get('inseridos', 0) + result_itens_missing.get('inseridos', 0)
-                result_itens['faltantes_sincronizados'] = result_itens_missing.get('inseridos', 0)
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao sincronizar itens faltantes (continuando): {e}")
+            max_iteracoes = 3
+            iteracao = 0
+            total_itens_missing = 0
+            
+            while iteracao < max_iteracoes:
+                iteracao += 1
+                try:
+                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    result_itens_missing = sync_missing_formulas_itens()
+                    inseridos_iteracao = result_itens_missing.get('inseridos', 0)
+                    total_itens_missing += inseridos_iteracao
+                    
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} itens sincronizados")
+                    
+                    # Se não inseriu nada nesta iteração, parar
+                    if inseridos_iteracao == 0:
+                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                        break
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao sincronizar itens faltantes na iteração {iteracao} (continuando): {e}")
+                    break
+            
+            result_itens['inseridos'] = result_itens.get('inseridos', 0) + total_itens_missing
+            result_itens['faltantes_sincronizados'] = total_itens_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
             result_itens = {'inseridos': 0, 'erro': str(e)}
@@ -2354,17 +2405,34 @@ def sync():
                 logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
             
             # AUTOMATICAMENTE sincronizar rastreabilidade faltante após sincronização incremental
+            # EXECUTAR EM LOOP até preencher todos os buracos (máximo 5 iterações)
             logger.info("\n" + "="*70)
             logger.info("6️⃣.1 SINCRONIZANDO RASTREABILIDADE FALTANTE (auto-correção)")
             logger.info("="*70)
-            try:
-                result_rastreabilidade_missing = sync_missing_rastreabilidade()
-                # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
-                logger.info(f"✅ Rastreabilidade faltante: {result_rastreabilidade_missing.get('inseridos', 0)} sincronizada")
-                result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + result_rastreabilidade_missing.get('inseridos', 0)
-                result_rastreabilidade['faltantes_sincronizados'] = result_rastreabilidade_missing.get('inseridos', 0)
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante (continuando): {e}")
+            max_iteracoes = 5
+            iteracao = 0
+            total_rastreabilidade_missing = 0
+            
+            while iteracao < max_iteracoes:
+                iteracao += 1
+                try:
+                    logger.info(f"   Iteração {iteracao}/{max_iteracoes}...")
+                    result_rastreabilidade_missing = sync_missing_rastreabilidade()
+                    inseridos_iteracao = result_rastreabilidade_missing.get('inseridos', 0)
+                    total_rastreabilidade_missing += inseridos_iteracao
+                    
+                    logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} registros sincronizados")
+                    
+                    # Se não inseriu nada nesta iteração, parar
+                    if inseridos_iteracao == 0:
+                        logger.info(f"   ✅ Nenhum buraco encontrado - parando loop")
+                        break
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante na iteração {iteracao} (continuando): {e}")
+                    break
+            
+            result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + total_rastreabilidade_missing
+            result_rastreabilidade['faltantes_sincronizados'] = total_rastreabilidade_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
             result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
