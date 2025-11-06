@@ -2496,10 +2496,10 @@ def sync():
         )
 
         # Versão fixa no código - garante que atualiza quando o código atualiza
-        # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
-        # Commit: 01e5c2f - Melhoria: sync_missing compara TODOS os registros + sync_missing_formulas_itens
+        # Commit: c6bf75f - FIX: Loop nas funcoes sync_missing para garantir 100% de sincronizacao
+        # Melhorias: sync_missing executa em loop até preencher todos os buracos + logging detalhado
         # IMPORTANTE: Se você está vendo 2.0.0, o EasyPanel não atualizou o código!
-        API_VERSION = '2.1.0-SEM-BURACOS'
+        API_VERSION = '3.1.0-100-PERCENT'
         resultado = {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
