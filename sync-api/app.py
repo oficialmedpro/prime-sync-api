@@ -2266,6 +2266,8 @@ def sync():
             max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_pedidos_missing = 0
+            iteracoes_sem_progresso = 0
+            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
             
             while iteracao < max_iteracoes:
                 iteracao += 1
@@ -2283,10 +2285,17 @@ def sync():
                         logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
                     
-                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
-                    if inseridos_iteracao == 0 and total_faltantes > 0:
-                        logger.warning(f"   ⚠️  {total_faltantes} pedidos ainda faltam (provavelmente faltam dependências) - continuando...")
-                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
+                    # Se inseriu algo, resetar contador de iterações sem progresso
+                    if inseridos_iteracao > 0:
+                        iteracoes_sem_progresso = 0
+                    else:
+                        iteracoes_sem_progresso += 1
+                        logger.warning(f"   ⚠️  {total_faltantes} pedidos ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
+                        
+                        # Se não inseriu nada por várias iterações consecutivas, parar
+                        if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
+                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            break
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2316,6 +2325,8 @@ def sync():
             max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_formulas_missing = 0
+            iteracoes_sem_progresso = 0
+            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
             
             while iteracao < max_iteracoes:
                 iteracao += 1
@@ -2333,10 +2344,17 @@ def sync():
                         logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
                     
-                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
-                    if inseridos_iteracao == 0 and total_faltantes > 0:
-                        logger.warning(f"   ⚠️  {total_faltantes} fórmulas ainda faltam (provavelmente faltam dependências) - continuando...")
-                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
+                    # Se inseriu algo, resetar contador de iterações sem progresso
+                    if inseridos_iteracao > 0:
+                        iteracoes_sem_progresso = 0
+                    else:
+                        iteracoes_sem_progresso += 1
+                        logger.warning(f"   ⚠️  {total_faltantes} fórmulas ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
+                        
+                        # Se não inseriu nada por várias iterações consecutivas, parar
+                        if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
+                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            break
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2365,6 +2383,8 @@ def sync():
             max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_itens_missing = 0
+            iteracoes_sem_progresso = 0
+            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
             
             while iteracao < max_iteracoes:
                 iteracao += 1
@@ -2382,10 +2402,17 @@ def sync():
                         logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
                     
-                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
-                    if inseridos_iteracao == 0 and total_faltantes > 0:
-                        logger.warning(f"   ⚠️  {total_faltantes} itens ainda faltam (provavelmente faltam dependências) - continuando...")
-                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
+                    # Se inseriu algo, resetar contador de iterações sem progresso
+                    if inseridos_iteracao > 0:
+                        iteracoes_sem_progresso = 0
+                    else:
+                        iteracoes_sem_progresso += 1
+                        logger.warning(f"   ⚠️  {total_faltantes} itens ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
+                        
+                        # Se não inseriu nada por várias iterações consecutivas, parar
+                        if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
+                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            break
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar itens faltantes na iteração {iteracao} (continuando): {e}")
                     break
@@ -2430,6 +2457,8 @@ def sync():
             max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
             iteracao = 0
             total_rastreabilidade_missing = 0
+            iteracoes_sem_progresso = 0
+            max_iteracoes_sem_progresso = 5  # Para se não inserir nada por 5 iterações consecutivas (rastreabilidade pode ter mais dependências)
             
             while iteracao < max_iteracoes:
                 iteracao += 1
@@ -2447,10 +2476,17 @@ def sync():
                         logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
                         break
                     
-                    # Se não inseriu nada mas ainda há faltantes, pode ser dependências faltantes
-                    if inseridos_iteracao == 0 and total_faltantes > 0:
-                        logger.warning(f"   ⚠️  {total_faltantes} registros ainda faltam (provavelmente faltam dependências) - continuando...")
-                        # Continuar tentando (pode ser que dependências sejam criadas em outras iterações)
+                    # Se inseriu algo, resetar contador de iterações sem progresso
+                    if inseridos_iteracao > 0:
+                        iteracoes_sem_progresso = 0
+                    else:
+                        iteracoes_sem_progresso += 1
+                        logger.warning(f"   ⚠️  {total_faltantes} registros ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
+                        
+                        # Se não inseriu nada por várias iterações consecutivas, parar
+                        if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
+                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            break
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante na iteração {iteracao} (continuando): {e}")
                     break
