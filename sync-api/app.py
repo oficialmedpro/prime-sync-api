@@ -1206,8 +1206,10 @@ def sync_tipos_processo_novos():
 def health():
     """Endpoint de health check"""
     # Versão fixa no código - garante que atualiza quando o código atualiza
+    # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
     # Commit: 01e5c2f - Melhoria: sync_missing compara TODOS os registros + sync_missing_formulas_itens
-    API_VERSION = '2.1.0'
+    # IMPORTANTE: Se você está vendo 2.0.0, o EasyPanel não atualizou o código!
+    API_VERSION = '2.1.0-SEM-BURACOS'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -2362,8 +2364,10 @@ def sync():
         )
 
         # Versão fixa no código - garante que atualiza quando o código atualiza
+        # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
         # Commit: 01e5c2f - Melhoria: sync_missing compara TODOS os registros + sync_missing_formulas_itens
-        API_VERSION = '2.1.0'
+        # IMPORTANTE: Se você está vendo 2.0.0, o EasyPanel não atualizou o código!
+        API_VERSION = '2.1.0-SEM-BURACOS'
         resultado = {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
