@@ -1,6 +1,27 @@
 # Sistema de Sincronizacao Firebird → Supabase
 
-**Versao:** 2.0.0 | **Status:** ✅ EM PRODUCAO
+**Versao:** 3.0.0-FORCADO-AGORA-20250128 | **Status:** ✅ EM PRODUCAO
+
+---
+
+# ⚠️ **ALERTA CRÍTICO - DEPLOY NO EASYPANEL** ⚠️
+
+## 🔴 **PROBLEMA CONHECIDO: EasyPanel NÃO atualiza containers automaticamente!**
+
+O EasyPanel **builda a nova imagem Docker**, mas **NÃO atualiza os containers** para usar a nova imagem. Os containers continuam rodando a imagem antiga, mesmo após múltiplos deploys.
+
+### ✅ **SOLUÇÃO OBRIGATÓRIA - Execute SEMPRE após deploy no EasyPanel:**
+
+**No console do servidor, execute:**
+
+```bash
+docker service scale prime-sync-api_prime-sync=0 && \
+sleep 5 && \
+docker service update --image easypanel/prime-sync-api/prime-sync:latest prime-sync-api_prime-sync --force && \
+docker service scale prime-sync-api_prime-sync=1
+```
+
+**📖 Documentação completa:** [`SOLUCAO_DEPLOY_EASYPANEL.md`](./SOLUCAO_DEPLOY_EASYPANEL.md)
 
 ---
 

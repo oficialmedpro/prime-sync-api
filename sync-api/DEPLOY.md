@@ -1,5 +1,26 @@
 # 🚀 GUIA COMPLETO DE DEPLOY
 
+## ⚠️ **ALERTA CRÍTICO - DEPLOY NO EASYPANEL** ⚠️
+
+### 🔴 **PROBLEMA CONHECIDO: EasyPanel NÃO atualiza containers automaticamente!**
+
+O EasyPanel **builda a nova imagem Docker**, mas **NÃO atualiza os containers** para usar a nova imagem. Os containers continuam rodando a imagem antiga, mesmo após múltiplos deploys.
+
+### ✅ **SOLUÇÃO OBRIGATÓRIA - Execute SEMPRE após deploy no EasyPanel:**
+
+**No console do servidor, execute:**
+
+```bash
+docker service scale prime-sync-api_prime-sync=0 && \
+sleep 5 && \
+docker service update --image easypanel/prime-sync-api/prime-sync:latest prime-sync-api_prime-sync --force && \
+docker service scale prime-sync-api_prime-sync=1
+```
+
+**📖 Documentação completa:** [`../SOLUCAO_DEPLOY_EASYPANEL.md`](../SOLUCAO_DEPLOY_EASYPANEL.md)
+
+---
+
 ## Pré-requisitos
 
 - [x] Domínio `sincro.oficialmed.com.br` apontando para o servidor

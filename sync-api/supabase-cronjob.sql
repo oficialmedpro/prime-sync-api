@@ -18,8 +18,8 @@ DECLARE
   v_result json;
   v_url text;
 BEGIN
-  -- Tentar primeiro endpoint: sincro.oficialmed.com.br
-  v_url := 'https://sincro.oficialmed.com.br/sync';
+  -- Tentar primeiro endpoint: EasyPanel (IP direto)
+  v_url := 'http://72.60.61.40:5000/sync';
 
   BEGIN
     SELECT * INTO v_response
@@ -27,23 +27,23 @@ BEGIN
       'POST',
       v_url,
       ARRAY[http_header('Content-Type', 'application/json'),
-            http_header('Authorization', 'Bearer prime-sync-2025')],
+            http_header('Authorization', 'Bearer prime-sync-2025-xY9kL2mP4nQ8wR5t')],
       'application/json',
       '{}'
     )::http_request);
 
     -- Se status 200, sucesso!
     IF v_response.status = 200 THEN
-      RAISE NOTICE 'Sincronização bem-sucedida via sincro.oficialmed.com.br';
+      RAISE NOTICE 'Sincronização bem-sucedida via EasyPanel (72.60.61.40:5000)';
       RETURN v_response.content::json;
     END IF;
 
   EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Falha em sincro.oficialmed.com.br: %. Tentando fallback...', SQLERRM;
+    RAISE NOTICE 'Falha em EasyPanel (72.60.61.40:5000): %. Tentando fallback...', SQLERRM;
   END;
 
-  -- Fallback: tentar segundo endpoint (backup)
-  v_url := 'https://sincro.oficialmed.com.br/sync';
+  -- Fallback: tentar segundo endpoint (se configurar domínio depois)
+  v_url := 'http://72.60.61.40:5000/sync';
 
   BEGIN
     SELECT * INTO v_response
@@ -51,19 +51,19 @@ BEGIN
       'POST',
       v_url,
       ARRAY[http_header('Content-Type', 'application/json'),
-            http_header('Authorization', 'Bearer prime-sync-2025')],
+            http_header('Authorization', 'Bearer prime-sync-2025-xY9kL2mP4nQ8wR5t')],
       'application/json',
       '{}'
     )::http_request);
 
     -- Se status 200, sucesso!
     IF v_response.status = 200 THEN
-      RAISE NOTICE 'Sincronização bem-sucedida via sincro.oficialmed.com.br (fallback)';
+      RAISE NOTICE 'Sincronização bem-sucedida via EasyPanel (fallback)';
       RETURN v_response.content::json;
     END IF;
 
   EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Falha no fallback sincro.oficialmed.com.br: %', SQLERRM;
+    RAISE NOTICE 'Falha no fallback EasyPanel: %', SQLERRM;
   END;
 
   -- Se chegou aqui, ambos falharam
