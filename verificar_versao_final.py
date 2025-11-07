@@ -32,7 +32,8 @@ try:
         
         versoes_validas = [
             '3.3.0-MELHORIAS-COMPLETAS',
-            '3.4.0-FIX-STATUS-PEDIDOS'
+            '3.4.0-FIX-STATUS-PEDIDOS',
+            '3.5.0-NO-DUPS'
         ]
 
         if version in versoes_validas:
@@ -43,6 +44,8 @@ try:
             print("   - Validacao de integridade referencial")
             if version == '3.4.0-FIX-STATUS-PEDIDOS':
                 print("   - Correcao do campo 'status' em pedidos faltantes")
+            if version == '3.5.0-NO-DUPS':
+                print("   - Evita duplicatas em prime_formulas_itens (retry robusto + unique constraint)")
         else:
             print(f"\n⚠️  ATENCAO! API ainda esta rodando versao antiga.")
             print(f"   Esperado: {versoes_validas[-1]}")

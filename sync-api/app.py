@@ -1490,9 +1490,9 @@ def health():
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
     # FORÇA REBUILD - Timestamp: 2025-01-28 17:00:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.4.0-FIX-STATUS-PEDIDOS
-    # Melhorias: Corrigido campo 'status' para 'status_aprovacao', 'status_entrega', 'status_geral'
-    API_VERSION = '3.4.0-FIX-STATUS-PEDIDOS'
+    # Esta versão DEVE aparecer: 3.5.0-NO-DUPS
+    # Melhorias: Evitar duplicatas em prime_formulas_itens (retry robusto + unique constraint)
+    API_VERSION = '3.5.0-NO-DUPS'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -2287,27 +2287,34 @@ def sync_missing_formulas_itens():
         limit = 1000
 
         while True:
-            resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
-                headers=headers,
-                params={
-                    'select': 'codigo_atendimento_original,numero_formula,numero_linha',
-                    'limit': limit,
-                    'offset': offset,
-                    'order': 'codigo_atendimento_original.asc,numero_formula.asc,numero_linha.asc'
-                },
-                timeout=30
-            )
+            try:
+                resp = buscar_com_retry(
+                    f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
+                    headers,
+                    params={
+                        'select': 'codigo_atendimento_original,numero_formula,numero_linha',
+                        'limit': limit,
+                        'offset': offset,
+                        'order': 'codigo_atendimento_original.asc,numero_formula.asc,numero_linha.asc'
+                    },
+                    max_tentativas=3,
+                    timeout=30
+                )
+            except Exception as e:
+                logger.error(f"   ❌ Erro ao buscar itens no Supabase (offset {offset}): {e}", exc_info=True)
+                break
 
-            if resp.status_code == 200:
-                dados = resp.json()
-                if not dados:
-                    break
-                todos_itens_sb.extend([(d['codigo_atendimento_original'], d['numero_formula'], d['numero_linha']) for d in dados])
-                offset += limit
-                if len(dados) < limit:
-                    break
-            else:
+            if resp.status_code != 200:
+                logger.error(f"   ❌ Erro ao buscar itens no Supabase (offset {offset}): {resp.status_code} - {resp.text[:200]}")
+                break
+
+            dados = resp.json()
+            if not dados:
+                break
+
+            todos_itens_sb.extend([(d['codigo_atendimento_original'], d['numero_formula'], d['numero_linha']) for d in dados])
+            offset += len(dados)
+            if len(dados) < limit:
                 break
 
         itens_sb = set(todos_itens_sb)
@@ -2343,30 +2350,38 @@ def sync_missing_formulas_itens():
         cache_formulas = {}
         offset = 0
         while True:
-            resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/prime_formulas",
-                headers=headers,
-                params={
-                    'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
-                    'limit': limit,
-                    'offset': offset,
-                    'order': 'codigo_orcamento_original.asc,numero_formula.asc'
-                },
-                timeout=30
-            )
-            if resp.status_code == 200:
-                dados = resp.json()
-                if not dados:
-                    break
-                for f in dados:
-                    cache_formulas[(f['codigo_orcamento_original'], f['numero_formula'])] = {
-                        'id': f['id'],
-                        'pedido_id': f['pedido_id']
-                    }
-                offset += limit
-                if len(dados) < limit:
-                    break
-            else:
+            try:
+                resp = buscar_com_retry(
+                    f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                    headers,
+                    params={
+                        'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                        'limit': limit,
+                        'offset': offset,
+                        'order': 'codigo_orcamento_original.asc,numero_formula.asc'
+                    },
+                    max_tentativas=3,
+                    timeout=30
+                )
+            except Exception as e:
+                logger.error(f"   ❌ Erro ao carregar cache de fórmulas (offset {offset}): {e}", exc_info=True)
+                break
+
+            if resp.status_code != 200:
+                logger.error(f"   ❌ Erro ao carregar cache de fórmulas (offset {offset}): {resp.status_code} - {resp.text[:200]}")
+                break
+
+            dados = resp.json()
+            if not dados:
+                break
+
+            for f in dados:
+                cache_formulas[(f['codigo_orcamento_original'], f['numero_formula'])] = {
+                    'id': f['id'],
+                    'pedido_id': f['pedido_id']
+                }
+            offset += len(dados)
+            if len(dados) < limit:
                 break
         logger.info(f"   Cache fórmulas: {len(cache_formulas)} fórmulas")
 
