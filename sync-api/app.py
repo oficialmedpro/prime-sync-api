@@ -14,6 +14,7 @@ from datetime import datetime
 import logging
 import time
 import re
+from threading import Lock, Thread
 from auditoria import iniciar_auditoria, finalizar_auditoria, verificar_integridade, listar_ultimas_sincronizacoes
 
 app = Flask(__name__)
@@ -63,6 +64,24 @@ headers = {
     'Content-Profile': 'api',
     'Prefer': 'resolution=merge-duplicates'
 }
+
+# Estado global da sincronização (controlado pelo endpoint /sync)
+sync_lock = Lock()
+sync_state = {
+    'running': False,
+    'started_at': None,
+    'finished_at': None,
+    'last_duration_seconds': None,
+    'last_error': None,
+    'last_result': None,
+    'trigger': None
+}
+
+
+def _atualizar_estado_sync(**kwargs):
+    """Atualiza o dicionário de estado da sincronização com lock."""
+    with sync_lock:
+        sync_state.update(kwargs)
 
 def limpar_string(texto):
     """Limpa strings removendo caracteres inválidos"""
@@ -388,6 +407,30 @@ def conectar_firebird():
         password=FIREBIRD_PASS,
         charset='UTF8'
     )
+
+
+def contar_supabase_registros(tabela_supabase):
+    """Retorna a contagem total de registros em uma tabela do Supabase."""
+    headers_count = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Accept-Profile': 'api',
+        'Prefer': 'count=exact'
+    }
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/{tabela_supabase}",
+        headers=headers_count,
+        params={'select': 'id', 'limit': 0},
+        timeout=30
+    )
+    if resp.status_code != 200:
+        raise Exception(f"Falha ao contar registros em {tabela_supabase}: {resp.status_code} - {resp.text[:200]}")
+    content_range = resp.headers.get('Content-Range', '0/0')
+    try:
+        total = int(content_range.split('/')[-1])
+    except (ValueError, IndexError):
+        total = 0
+    return total
 
 def sync_clientes_novos():
     """Sincroniza TODOS os clientes novos (SEM limitação)
@@ -1490,9 +1533,9 @@ def health():
     # Commit: 6fff877 - Fix: Versao 2.1.0 fixa no codigo (nao depende de variavel de ambiente)
     # FORÇA REBUILD - Timestamp: 2025-01-28 17:00:00
     # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
-    # Esta versão DEVE aparecer: 3.5.0-NO-DUPS
-    # Melhorias: Evitar duplicatas em prime_formulas_itens (retry robusto + unique constraint)
-    API_VERSION = '3.5.0-NO-DUPS'
+    # Esta versão DEVE aparecer: 3.6.0-AUTO-BG
+    # Melhorias: Execução assíncrona, status de sincronização em /sync/status, laços reforçados contra buracos
+    API_VERSION = '3.6.0-AUTO-BG'
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -2524,17 +2567,16 @@ def sync_missing():
             'timestamp': datetime.now().isoformat()
         }), 500
 
-@app.route('/sync', methods=['GET', 'POST'])
-def sync():
-    """Endpoint principal de sincronização"""
+def executar_sync_completa(trigger='manual'):
+    """Executa a sincronização completa de forma síncrona (utilizada em threads de background)."""
     auditoria_id = None
+    inicio = datetime.now()
     try:
-        logger.info("="*70)
+        logger.info("=" * 70)
         logger.info("🚀 SINCRONIZAÇÃO INCREMENTAL V2.0 - COM AUDITORIA")
-        logger.info("="*70)
+        logger.info("=" * 70)
+        logger.info(f"🎯 Disparo: {trigger}")
 
-        inicio = datetime.now()
-        
         # Registrar início na auditoria
         auditoria_id = iniciar_auditoria(
             tabela_origem='firebird',
@@ -2544,19 +2586,19 @@ def sync():
 
         # Sincronizar na ordem correta (respeitando dependências)
         # 1. Clientes primeiro (não depende de nada)
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("1️⃣ SINCRONIZANDO CLIENTES (ordem: 1/6)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         try:
             result_clientes = sync_clientes_novos()
             logger.info(f"📋 Clientes: {result_clientes}")
             if result_clientes.get('erro'):
                 logger.warning(f"⚠️ Erro em clientes (continuando): {result_clientes['erro']}")
-            
+
             # AUTOMATICAMENTE sincronizar clientes faltantes após sincronização incremental
-            logger.info("\n" + "="*70)
+            logger.info("\n" + "=" * 70)
             logger.info("1️⃣.1 SINCRONIZANDO CLIENTES FALTANTES (auto-correção)")
-            logger.info("="*70)
+            logger.info("=" * 70)
             try:
                 result_clientes_missing = sync_missing_clientes()
                 # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
@@ -2565,32 +2607,33 @@ def sync():
                 result_clientes['faltantes_sincronizados'] = result_clientes_missing.get('inseridos', 0)
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao sincronizar clientes faltantes (continuando): {e}")
-                
+
         except Exception as e:
             logger.error(f"❌ Erro crítico em clientes: {e}", exc_info=True)
             result_clientes = {'inseridos': 0, 'erro': str(e)}
 
         # 2. Pedidos (depende de clientes)
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("2️⃣ SINCRONIZANDO PEDIDOS (ordem: 2/6)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         try:
             result_pedidos = sync_pedidos_novos()
             logger.info(f"📋 Pedidos: {result_pedidos}")
             if result_pedidos.get('erro'):
                 logger.warning(f"⚠️ Erro em pedidos (continuando): {result_pedidos['erro']}")
-            
+
             # AUTOMATICAMENTE sincronizar pedidos faltantes após sincronização incremental
             # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
-            logger.info("\n" + "="*70)
+            logger.info("\n" + "=" * 70)
             logger.info("2️⃣.1 SINCRONIZANDO PEDIDOS FALTANTES (auto-correção)")
-            logger.info("="*70)
-            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
+            logger.info("=" * 70)
+            max_iteracoes = 200  # Limite de segurança alto
             iteracao = 0
             total_pedidos_missing = 0
             iteracoes_sem_progresso = 0
-            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
-            
+            max_iteracoes_sem_progresso = 10  # Permite mais tentativas antes de desistir
+            ultimo_total_faltantes = None
+
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
@@ -2599,57 +2642,56 @@ def sync():
                     inseridos_iteracao = result_pedidos_missing.get('inseridos', 0)
                     total_faltantes = result_pedidos_missing.get('total_faltantes', 0)
                     total_pedidos_missing += inseridos_iteracao
-                    
+
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} pedidos sincronizados (faltantes: {total_faltantes})")
-                    
-                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
-                    if inseridos_iteracao == 0 and total_faltantes == 0:
-                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
+
+                    if total_faltantes == 0:
+                        logger.info("   ✅ Todos os buracos preenchidos - parando loop")
                         break
-                    
-                    # Se inseriu algo, resetar contador de iterações sem progresso
-                    if inseridos_iteracao > 0:
+
+                    if inseridos_iteracao > 0 or (ultimo_total_faltantes is not None and total_faltantes < ultimo_total_faltantes):
                         iteracoes_sem_progresso = 0
                     else:
                         iteracoes_sem_progresso += 1
                         logger.warning(f"   ⚠️  {total_faltantes} pedidos ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
-                        
-                        # Se não inseriu nada por várias iterações consecutivas, parar
                         if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
-                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            logger.warning("   ⚠️  Parando loop: iterações consecutivas sem progresso (provavelmente faltam dependências)")
                             break
+
+                    ultimo_total_faltantes = total_faltantes
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar pedidos faltantes na iteração {iteracao} (continuando): {e}")
                     break
-            
+
             result_pedidos['inseridos'] = result_pedidos.get('inseridos', 0) + total_pedidos_missing
+            result_pedidos['faltantes_restantes'] = ultimo_total_faltantes or 0
+            result_pedidos['iteracoes_missing'] = iteracao
             result_pedidos['faltantes_sincronizados'] = total_pedidos_missing
-                
+
         except Exception as e:
             logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
             result_pedidos = {'inseridos': 0, 'erro': str(e)}
 
         # 3. Fórmulas (depende de pedidos)
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("3️⃣ SINCRONIZANDO FÓRMULAS (ordem: 3/6)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         try:
             result_formulas = sync_formulas_novas()
             logger.info(f"📋 Fórmulas: {result_formulas}")
             if result_formulas.get('erro'):
                 logger.warning(f"⚠️ Erro em fórmulas (continuando): {result_formulas['erro']}")
-            
-            # AUTOMATICAMENTE sincronizar fórmulas faltantes após sincronização incremental
-            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
-            logger.info("\n" + "="*70)
+
+            logger.info("\n" + "=" * 70)
             logger.info("3️⃣.1 SINCRONIZANDO FÓRMULAS FALTANTES (auto-correção)")
-            logger.info("="*70)
-            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
+            logger.info("=" * 70)
+            max_iteracoes = 200
             iteracao = 0
             total_formulas_missing = 0
             iteracoes_sem_progresso = 0
-            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
-            
+            max_iteracoes_sem_progresso = 10
+            ultimo_total_faltantes = None
+
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
@@ -2658,56 +2700,55 @@ def sync():
                     inseridos_iteracao = result_formulas_missing.get('inseridos', 0)
                     total_faltantes = result_formulas_missing.get('total_faltantes', 0)
                     total_formulas_missing += inseridos_iteracao
-                    
+
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} fórmulas sincronizadas (faltantes: {total_faltantes})")
-                    
-                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
-                    if inseridos_iteracao == 0 and total_faltantes == 0:
-                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
+
+                    if total_faltantes == 0:
+                        logger.info("   ✅ Todos os buracos preenchidos - parando loop")
                         break
-                    
-                    # Se inseriu algo, resetar contador de iterações sem progresso
-                    if inseridos_iteracao > 0:
+
+                    if inseridos_iteracao > 0 or (ultimo_total_faltantes is not None and total_faltantes < ultimo_total_faltantes):
                         iteracoes_sem_progresso = 0
                     else:
                         iteracoes_sem_progresso += 1
                         logger.warning(f"   ⚠️  {total_faltantes} fórmulas ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
-                        
-                        # Se não inseriu nada por várias iterações consecutivas, parar
                         if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
-                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            logger.warning("   ⚠️  Parando loop: iterações consecutivas sem progresso (provavelmente faltam dependências)")
                             break
+
+                    ultimo_total_faltantes = total_faltantes
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar fórmulas faltantes na iteração {iteracao} (continuando): {e}")
                     break
-            
+
             result_formulas['inseridos'] = result_formulas.get('inseridos', 0) + total_formulas_missing
+            result_formulas['faltantes_restantes'] = ultimo_total_faltantes or 0
+            result_formulas['iteracoes_missing'] = iteracao
             result_formulas['faltantes_sincronizados'] = total_formulas_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
             result_formulas = {'inseridos': 0, 'erro': str(e)}
 
         # 4. Itens de Fórmulas (depende de fórmulas)
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("4️⃣ SINCRONIZANDO ITENS DE FÓRMULAS (ordem: 4/6)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         try:
             result_itens = sync_formulas_itens_novos()
             logger.info(f"📋 Itens: {result_itens}")
             if result_itens.get('erro'):
                 logger.warning(f"⚠️ Erro em itens (continuando): {result_itens['erro']}")
-            
-            # AUTOMATICAMENTE sincronizar itens faltantes após sincronização incremental
-            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
-            logger.info("\n" + "="*70)
+
+            logger.info("\n" + "=" * 70)
             logger.info("4️⃣.1 SINCRONIZANDO ITENS FALTANTES (auto-correção)")
-            logger.info("="*70)
-            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
+            logger.info("=" * 70)
+            max_iteracoes = 200
             iteracao = 0
             total_itens_missing = 0
             iteracoes_sem_progresso = 0
-            max_iteracoes_sem_progresso = 3  # Para se não inserir nada por 3 iterações consecutivas
-            
+            max_iteracoes_sem_progresso = 10
+            ultimo_total_faltantes = None
+
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
@@ -2716,40 +2757,39 @@ def sync():
                     inseridos_iteracao = result_itens_missing.get('inseridos', 0)
                     total_faltantes = result_itens_missing.get('total_faltantes', 0)
                     total_itens_missing += inseridos_iteracao
-                    
+
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} itens sincronizados (faltantes: {total_faltantes})")
-                    
-                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
-                    if inseridos_iteracao == 0 and total_faltantes == 0:
-                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
+
+                    if total_faltantes == 0:
+                        logger.info("   ✅ Todos os buracos preenchidos - parando loop")
                         break
-                    
-                    # Se inseriu algo, resetar contador de iterações sem progresso
-                    if inseridos_iteracao > 0:
+
+                    if inseridos_iteracao > 0 or (ultimo_total_faltantes is not None and total_faltantes < ultimo_total_faltantes):
                         iteracoes_sem_progresso = 0
                     else:
                         iteracoes_sem_progresso += 1
                         logger.warning(f"   ⚠️  {total_faltantes} itens ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
-                        
-                        # Se não inseriu nada por várias iterações consecutivas, parar
                         if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
-                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            logger.warning("   ⚠️  Parando loop: iterações consecutivas sem progresso (provavelmente faltam dependências)")
                             break
+
+                    ultimo_total_faltantes = total_faltantes
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar itens faltantes na iteração {iteracao} (continuando): {e}")
                     break
-            
+
             result_itens['inseridos'] = result_itens.get('inseridos', 0) + total_itens_missing
+            result_itens['faltantes_restantes'] = ultimo_total_faltantes or 0
+            result_itens['iteracoes_missing'] = iteracao
             result_itens['faltantes_sincronizados'] = total_itens_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
             result_itens = {'inseridos': 0, 'erro': str(e)}
 
         # 5. Tipos Processo (FASE 1 - tabela de referência, SEM dependências)
-        # IMPORTANTE: Deve ser sincronizado ANTES de rastreabilidade!
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("5️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 5/6 - FASE 1)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         try:
             result_tipos = sync_tipos_processo_novos()
             logger.info(f"📋 Tipos Processo: {result_tipos}")
@@ -2760,28 +2800,26 @@ def sync():
             result_tipos = {'inseridos': 0, 'erro': str(e)}
 
         # 6. Rastreabilidade (FASE 3 - depende de pedidos + tipos_processo)
-        # IMPORTANTE: Deve ser sincronizado DEPOIS de pedidos E tipos_processo!
-        logger.info("\n" + "="*70)
+        logger.info("\n" + "=" * 70)
         logger.info("6️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 6/6 - FASE 3)")
-        logger.info("="*70)
+        logger.info("=" * 70)
         logger.info("   ⚠️  Dependências: prime_pedidos ✅ + prime_tipos_processo ✅")
         try:
             result_rastreabilidade = sync_rastreabilidade_nova()
             logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
             if result_rastreabilidade.get('erro'):
                 logger.warning(f"⚠️ Erro em rastreabilidade (continuando): {result_rastreabilidade['erro']}")
-            
-            # AUTOMATICAMENTE sincronizar rastreabilidade faltante após sincronização incremental
-            # EXECUTAR EM LOOP até preencher TODOS os buracos (sem limite de iterações)
-            logger.info("\n" + "="*70)
+
+            logger.info("\n" + "=" * 70)
             logger.info("6️⃣.1 SINCRONIZANDO RASTREABILIDADE FALTANTE (auto-correção)")
-            logger.info("="*70)
-            max_iteracoes = 50  # Limite de segurança (muito alto para não limitar)
+            logger.info("=" * 70)
+            max_iteracoes = 200
             iteracao = 0
             total_rastreabilidade_missing = 0
             iteracoes_sem_progresso = 0
-            max_iteracoes_sem_progresso = 5  # Para se não inserir nada por 5 iterações consecutivas (rastreabilidade pode ter mais dependências)
-            
+            max_iteracoes_sem_progresso = 15  # rastreabilidade depende de múltiplas tabelas
+            ultimo_total_faltantes = None
+
             while iteracao < max_iteracoes:
                 iteracao += 1
                 try:
@@ -2790,37 +2828,37 @@ def sync():
                     inseridos_iteracao = result_rastreabilidade_missing.get('inseridos', 0)
                     total_faltantes = result_rastreabilidade_missing.get('total_faltantes', 0)
                     total_rastreabilidade_missing += inseridos_iteracao
-                    
+
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} registros sincronizados (faltantes: {total_faltantes})")
-                    
-                    # Se não inseriu nada nesta iteração E não há mais faltantes, parar
-                    if inseridos_iteracao == 0 and total_faltantes == 0:
-                        logger.info(f"   ✅ Todos os buracos preenchidos - parando loop")
+
+                    if total_faltantes == 0:
+                        logger.info("   ✅ Todos os buracos preenchidos - parando loop")
                         break
-                    
-                    # Se inseriu algo, resetar contador de iterações sem progresso
-                    if inseridos_iteracao > 0:
+
+                    if inseridos_iteracao > 0 or (ultimo_total_faltantes is not None and total_faltantes < ultimo_total_faltantes):
                         iteracoes_sem_progresso = 0
                     else:
                         iteracoes_sem_progresso += 1
                         logger.warning(f"   ⚠️  {total_faltantes} registros ainda faltam (iterações sem progresso: {iteracoes_sem_progresso}/{max_iteracoes_sem_progresso})")
-                        
-                        # Se não inseriu nada por várias iterações consecutivas, parar
                         if iteracoes_sem_progresso >= max_iteracoes_sem_progresso:
-                            logger.warning(f"   ⚠️  Parando loop: {iteracoes_sem_progresso} iterações sem progresso (provavelmente faltam dependências)")
+                            logger.warning("   ⚠️  Parando loop: iterações consecutivas sem progresso (provavelmente faltam dependências)")
                             break
+
+                    ultimo_total_faltantes = total_faltantes
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao sincronizar rastreabilidade faltante na iteração {iteracao} (continuando): {e}")
                     break
-            
+
             result_rastreabilidade['inseridos'] = result_rastreabilidade.get('inseridos', 0) + total_rastreabilidade_missing
+            result_rastreabilidade['faltantes_restantes'] = ultimo_total_faltantes or 0
+            result_rastreabilidade['iteracoes_missing'] = iteracao
             result_rastreabilidade['faltantes_sincronizados'] = total_rastreabilidade_missing
         except Exception as e:
             logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
             result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
 
         tempo_total = (datetime.now() - inicio).total_seconds()
-        
+
         total_inseridos = (
             result_clientes.get('inseridos', 0) +
             result_pedidos.get('inseridos', 0) +
@@ -2878,10 +2916,7 @@ def sync():
         )
 
         # Versão fixa no código - garante que atualiza quando o código atualiza
-        # Commit: c6bf75f - FIX: Loop nas funcoes sync_missing para garantir 100% de sincronizacao
-        # Melhorias: sync_missing executa em loop até preencher todos os buracos + logging detalhado
-        # IMPORTANTE: Se você está vendo 2.0.0, o EasyPanel não atualizou o código!
-        API_VERSION = '3.1.0-100-PERCENT'
+        API_VERSION = '3.6.0-AUTO-BG'
         resultado = {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
@@ -2895,7 +2930,8 @@ def sync():
             'rastreabilidade': result_rastreabilidade,
             'tipos_processo': result_tipos,
             'total_inseridos': total_inseridos,
-            'integridade': integridade
+            'integridade': integridade,
+            'trigger': trigger
         }
 
         if erros:
@@ -2905,24 +2941,178 @@ def sync():
         else:
             logger.info(f"✅ CONCLUÍDO COM SUCESSO - Total: {total_inseridos} registros em {tempo_total:.1f}s")
 
-        return jsonify(resultado)
+        return resultado
 
     except Exception as e:
         logger.error(f"❌ Erro na sincronização: {e}")
-        
-        # Registrar erro na auditoria
+
         if auditoria_id:
             finalizar_auditoria(
                 auditoria_id=auditoria_id,
                 status='erro',
                 mensagem=str(e)
             )
-        
+
+        raise
+
+
+def _executar_sync_background(trigger):
+    """Executa a sincronização em uma thread dedicada atualizando o estado global."""
+    inicio_thread = datetime.now()
+    try:
+        resultado = executar_sync_completa(trigger=trigger)
+        fim_thread = datetime.now()
+        _atualizar_estado_sync(
+            running=False,
+            finished_at=fim_thread.isoformat(),
+            last_duration_seconds=(fim_thread - inicio_thread).total_seconds(),
+            last_error=None,
+            last_result=resultado
+        )
+    except Exception as exc:
+        fim_thread = datetime.now()
+        logger.exception("❌ Falha na execução em background: %s", exc)
+        _atualizar_estado_sync(
+            running=False,
+            finished_at=fim_thread.isoformat(),
+            last_duration_seconds=(fim_thread - inicio_thread).total_seconds(),
+            last_error=str(exc),
+            last_result=None
+        )
+
+
+@app.route('/sync', methods=['GET', 'POST'])
+def sync():
+    """Endpoint principal: dispara a sincronização em background."""
+    trigger = (
+        request.args.get('trigger')
+        or request.headers.get('X-Sync-Trigger')
+        or ('cron' if request.headers.get('User-Agent', '').lower().startswith('supabase') else 'manual')
+    )
+
+    with sync_lock:
+        if sync_state['running']:
+            estado_atual = dict(sync_state)
+            logger.info("🔁 Sincronização já em andamento - disparo ignorado")
+            return jsonify({
+                'sucesso': True,
+                'mensagem': 'Sincronização já está em execução',
+                'status': estado_atual
+            }), 202
+
+        agora = datetime.now()
+        _atualizar_estado_sync(
+            running=True,
+            started_at=agora.isoformat(),
+            finished_at=None,
+            last_error=None,
+            trigger=trigger
+        )
+
+    worker = Thread(target=_executar_sync_background, args=(trigger,), daemon=True)
+    worker.start()
+
+    with sync_lock:
+        estado_inicial = dict(sync_state)
+
+    return jsonify({
+        'sucesso': True,
+        'mensagem': 'Sincronização iniciada em background',
+        'status': estado_inicial
+    }), 202
+
+
+@app.route('/sync/status', methods=['GET'])
+def sync_status():
+    """Retorna o estado atual/recente da sincronização."""
+    with sync_lock:
+        estado = dict(sync_state)
+    return jsonify({
+        'sucesso': True,
+        'status': estado
+    })
+
+
+@app.route('/sync/summary', methods=['GET'])
+def sync_summary():
+    """Compara totais Firebird x Supabase para monitoramento rápido."""
+    conn = None
+    try:
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+
+        tabelas = [
+            {
+                'nome': 'prime_clientes',
+                'firebird': 'SELECT COUNT(*) FROM CLIENTE WHERE ATIVO = -1 AND CODIGO < 500000',
+                'supabase': 'prime_clientes'
+            },
+            {
+                'nome': 'prime_pedidos',
+                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A1 WHERE CODIGO_CLIENTE IS NOT NULL',
+                'supabase': 'prime_pedidos'
+            },
+            {
+                'nome': 'prime_formulas',
+                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A2',
+                'supabase': 'prime_formulas'
+            },
+            {
+                'nome': 'prime_formulas_itens',
+                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A3 WHERE CODIGO_ATEND_A1 IS NOT NULL',
+                'supabase': 'prime_formulas_itens'
+            },
+            {
+                'nome': 'prime_rastreabilidade',
+                'firebird': 'SELECT COUNT(*) FROM PROCESSO_MANIPULACAO',
+                'supabase': 'prime_rastreabilidade'
+            },
+            {
+                'nome': 'prime_tipos_processo',
+                'firebird': 'SELECT COUNT(*) FROM FORMAFARMACEUTICA_PROCESSO_TIPO',
+                'supabase': 'prime_tipos_processo'
+            }
+        ]
+
+        resultado_tabelas = []
+        total_firebird = 0
+        total_supabase = 0
+
+        for tab in tabelas:
+            cursor.execute(tab['firebird'])
+            total_fb = cursor.fetchone()[0]
+            total_sb = contar_supabase_registros(tab['supabase'])
+
+            resultado_tabelas.append({
+                'tabela': tab['nome'],
+                'firebird': total_fb,
+                'supabase': total_sb,
+                'faltantes': total_fb - total_sb,
+                'percentual': round((total_sb / total_fb * 100), 2) if total_fb else 100.0
+            })
+
+            total_firebird += total_fb
+            total_supabase += total_sb
+
+        return jsonify({
+            'sucesso': True,
+            'atualizado_em': datetime.now().isoformat(),
+            'total_firebird': total_firebird,
+            'total_supabase': total_supabase,
+            'faltantes_totais': total_firebird - total_supabase,
+            'percentual_geral': round((total_supabase / total_firebird * 100), 2) if total_firebird else 100.0,
+            'tabelas': resultado_tabelas
+        })
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao gerar resumo de sincronização: {e}")
         return jsonify({
             'sucesso': False,
-            'erro': str(e),
-            'timestamp': datetime.now().isoformat()
+            'erro': str(e)
         }), 500
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))

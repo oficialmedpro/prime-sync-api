@@ -1,4 +1,4 @@
-# FORÇA REBUILD - Timestamp: 2025-01-28 15:30:00
+# FORÇA REBUILD - Timestamp: 2025-11-08 14:45:00
 # Se você está vendo 2.0.0, o EasyPanel NÃO está buildando do Git!
 # Imagem base Python
 FROM python:3.11-slim
@@ -34,4 +34,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:5000/health')"
 
 # Comando para iniciar (usando gunicorn para produção)
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "300", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "900", "--graceful-timeout", "120", "app:app"]

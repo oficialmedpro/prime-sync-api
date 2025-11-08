@@ -18,9 +18,10 @@
 - **Funciona:** ✅ Sim, preenche todos os buracos
 
 ### 3. **Loop Inteligente** ✅
-- Executa até 50 iterações
-- Para quando não há mais progresso (3-5 iterações sem inserção)
-- **Funciona:** ✅ Sim, executa até preencher todos os buracos
+- Executa até **200 iterações** por tabela
+- Só para quando o total de faltantes **não diminui por 10-15 passagens consecutivas**
+- Registra o saldo restante (`faltantes_restantes`) para auditoria
+- **Funciona:** ✅ Insiste até que o total de buracos chegue a zero (ou reste apenas dependências inválidas)
 
 ### 4. **Retry Automático** ✅
 - Tenta novamente em caso de rate limiting (429)
@@ -38,6 +39,12 @@
 - Verifica se dependências existem antes de inserir
 - Detecta dependências faltantes
 - **Funciona:** ✅ Sim, detecta dependências faltantes
+
+### 7. **Execução Assíncrona e Monitoramento** ✅
+- `/sync` devolve resposta imediata (202) e roda em **thread dedicada** dentro do Gunicorn
+- Evita `WORKER TIMEOUT` mesmo em sincronizações longas
+- Novo endpoint `/sync/status` expõe andamento, resultado e eventuais erros
+- **Funciona:** ✅ Cronjobs / scripts não bloqueiam mais e podem acompanhar o progresso em tempo real
 
 ---
 
@@ -136,4 +143,5 @@
 ---
 
 **Última atualização:** 2025-01-28
+
 

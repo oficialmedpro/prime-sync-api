@@ -33,7 +33,8 @@ try:
         versoes_validas = [
             '3.3.0-MELHORIAS-COMPLETAS',
             '3.4.0-FIX-STATUS-PEDIDOS',
-            '3.5.0-NO-DUPS'
+            '3.5.0-NO-DUPS',
+            '3.6.0-AUTO-BG'
         ]
 
         if version in versoes_validas:
@@ -46,6 +47,9 @@ try:
                 print("   - Correcao do campo 'status' em pedidos faltantes")
             if version == '3.5.0-NO-DUPS':
                 print("   - Evita duplicatas em prime_formulas_itens (retry robusto + unique constraint)")
+            if version == '3.6.0-AUTO-BG':
+                print("   - Execucao assíncrona com thread dedicada")
+                print("   - Endpoint /sync/status para acompanhar progresso em tempo real")
         else:
             print(f"\n⚠️  ATENCAO! API ainda esta rodando versao antiga.")
             print(f"   Esperado: {versoes_validas[-1]}")

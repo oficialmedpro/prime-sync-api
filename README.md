@@ -1,6 +1,7 @@
 # Sistema de Sincronizacao Firebird → Supabase
 
-**Versao:** 3.0.0-FORCADO-AGORA-20250128 | **Status:** ✅ EM PRODUCAO
+**Versao:** 3.6.0-AUTO-BG | **Status:** ✅ EM PRODUCAO
+**Novidades:** Execução /sync em background automático + endpoint `/sync/status` + laços reforçados contra buracos
 
 ---
 

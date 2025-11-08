@@ -67,6 +67,8 @@ Sistema automatizado de sincronização incremental entre Firebird (Prime) e Sup
 - ✅ **Failover Automático** - beta.oficialmed.com.br → bi.oficialmed.com.br
 - ✅ **Health Check** - Monitoramento automático
 - ✅ **Cronjob Supabase** - Execução automática agendada
+- ✅ **/sync assíncrono** - Execução em thread dedicada (sem bloquear o request)
+- ✅ **/sync/status** - Acompanhe o progresso e o histórico da última execução
 
 ---
 
