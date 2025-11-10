@@ -73,12 +73,22 @@ def imprimir_summary():
     print(f"Percentual Geral.....: {resumo.get('percentual_geral')}%")
 
     print("\nPor tabela:")
-    for linha in resumo.get('tabelas', []):
-        print(
-            f" - {linha['tabela']}: Firebird={linha['firebird']:,} | "
-            f"Supabase={linha['supabase']:,} | Faltantes={linha['faltantes']:,} "
-            f"({linha['percentual']}%)"
-        )
+            for linha in resumo.get('tabelas', []):
+                firebird_val = linha.get('firebird')
+                supabase_val = linha.get('supabase')
+                faltantes_val = linha.get('faltantes')
+                percentual_val = linha.get('percentual')
+
+                firebird_txt = f"{firebird_val:,}" if isinstance(firebird_val, (int, float)) else str(firebird_val)
+                supabase_txt = f"{supabase_val:,}" if isinstance(supabase_val, (int, float)) else str(supabase_val)
+                faltantes_txt = f"{faltantes_val:,}" if isinstance(faltantes_val, (int, float)) else str(faltantes_val)
+                percentual_txt = f"{percentual_val}%" if percentual_val is not None else "N/A"
+
+                print(
+                    f" - {linha['tabela']}: Firebird={firebird_txt} | "
+                    f"Supabase={supabase_txt} | Faltantes={faltantes_txt} "
+                    f"({percentual_txt})"
+                )
 
 
 def main():

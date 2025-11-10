@@ -62,7 +62,7 @@ headers = {
     'Content-Type': 'application/json',
     'Accept-Profile': 'api',
     'Content-Profile': 'api',
-    'Prefer': 'resolution=merge-duplicates'
+    'Prefer': 'resolution=merge-duplicates,return=representation'
 }
 
 # Estado global da sincronização (controlado pelo endpoint /sync)
@@ -193,14 +193,14 @@ def sanitizar_cep(cep):
     
     return cep
 
-def inserir_com_retry(url, headers, json_data, max_tentativas=3, timeout=60):
+def inserir_com_retry(url, headers, json_data, params=None, max_tentativas=3, timeout=60):
     """Insere dados no Supabase com retry e backoff exponencial"""
     for tentativa in range(max_tentativas):
         try:
-            response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            response = requests.post(url, headers=headers, params=params, json=json_data, timeout=timeout)
             
             # Sucesso
-            if response.status_code in [200, 201]:
+            if response.status_code in [200, 201, 204]:
                 return response
             
             # Rate limiting - aguardar e tentar novamente
@@ -735,7 +735,14 @@ def sync_clientes_novos():
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
                     # Usar retry com backoff exponencial
-                    response = inserir_com_retry(url, headers, clientes_dados, max_tentativas=3, timeout=60)
+                    response = inserir_com_retry(
+                        url,
+                        headers,
+                        clientes_dados,
+                        params={'on_conflict': 'codigo_cliente_original'},
+                        max_tentativas=3,
+                        timeout=60
+                    )
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(clientes_dados)
@@ -881,7 +888,14 @@ def sync_pedidos_novos():
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
                     # Usar retry com backoff exponencial
-                    response = inserir_com_retry(url, headers, pedidos_dados, max_tentativas=3, timeout=60)
+                    response = inserir_com_retry(
+                        url,
+                        headers,
+                        pedidos_dados,
+                        params={'on_conflict': 'codigo_orcamento_original'},
+                        max_tentativas=3,
+                        timeout=60
+                    )
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(pedidos_dados)
@@ -1030,7 +1044,14 @@ def sync_formulas_novas():
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
                     # Usar retry com backoff exponencial
-                    response = inserir_com_retry(url, headers, formulas_dados, max_tentativas=3, timeout=60)
+                    response = inserir_com_retry(
+                        url,
+                        headers,
+                        formulas_dados,
+                        params={'on_conflict': 'codigo_orcamento_original,numero_formula'},
+                        max_tentativas=3,
+                        timeout=60
+                    )
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(formulas_dados)
@@ -1226,11 +1247,18 @@ def sync_formulas_itens_novos():
             if itens_dados:
                 try:
                     headers_insert = headers.copy()
-                    headers_insert['Prefer'] = 'resolution=ignore-duplicates'
-                    
+                    headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
+
                     url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
                     # Usar retry com backoff exponencial
-                    response = inserir_com_retry(url, headers_insert, itens_dados, max_tentativas=3, timeout=60)
+                    response = inserir_com_retry(
+                        url,
+                        headers_insert,
+                        itens_dados,
+                        params={'on_conflict': 'codigo_atendimento_original,numero_formula,numero_linha'},
+                        max_tentativas=3,
+                        timeout=60
+                    )
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(itens_dados)
@@ -1436,7 +1464,14 @@ def sync_rastreabilidade_nova():
                 try:
                     url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
                     # Usar retry com backoff exponencial
-                    response = inserir_com_retry(url, headers, rastreabilidade_dados, max_tentativas=3, timeout=60)
+                    response = inserir_com_retry(
+                        url,
+                        headers,
+                        rastreabilidade_dados,
+                        params={'on_conflict': 'codigo_processo_original'},
+                        max_tentativas=3,
+                        timeout=60
+                    )
                     
                     if response.status_code in [200, 201]:
                         lote_inseridos = len(rastreabilidade_dados)
@@ -1839,20 +1874,19 @@ def sync_missing_clientes():
                 clientes_dados.append(cliente)
 
             if clientes_dados:
-                # Usar ignore-duplicates para evitar erro
                 headers_insert = headers.copy()
-                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
 
-                # Usar retry com backoff exponencial
                 resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_clientes",
                     headers_insert,
                     clientes_dados,
+                    params={'on_conflict': 'codigo_cliente_original'},
                     max_tentativas=3,
                     timeout=60
                 )
 
-                if resp_insert.status_code in [200, 201]:
+                if resp_insert.status_code in [200, 201, 204]:
                     lote_inseridos = len(clientes_dados)
                     total_inseridos += lote_inseridos
                     logger.info(f"   ✅ Lote {lote_idx // 1000 + 1}: {lote_inseridos} clientes sincronizados")
@@ -2019,20 +2053,19 @@ def sync_missing_pedidos():
                 logger.warning(f"   ⚠️  Lote {i//1000 + 1}: {pedidos_sem_cliente} pedidos sem cliente (não inseridos)")
             
             if pedidos_dados:
-                # Usar ignore-duplicates para evitar erro
                 headers_insert = headers.copy()
-                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
 
-                # Usar retry com backoff exponencial
                 resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_pedidos",
                     headers_insert,
                     pedidos_dados,
+                    params={'on_conflict': 'codigo_orcamento_original'},
                     max_tentativas=3,
                     timeout=60
                 )
 
-                if resp_insert.status_code in [200, 201]:
+                if resp_insert.status_code in [200, 201, 204]:
                     total_inseridos += len(pedidos_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(pedidos_dados)} pedidos inseridos")
                 else:
@@ -2185,18 +2218,18 @@ def sync_missing_formulas():
             
             if formulas_dados:
                 headers_insert = headers.copy()
-                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
 
-                # Usar retry com backoff exponencial
                 resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_formulas",
                     headers_insert,
                     formulas_dados,
+                    params={'on_conflict': 'codigo_orcamento_original,numero_formula'},
                     max_tentativas=3,
                     timeout=60
                 )
 
-                if resp_insert.status_code in [200, 201]:
+                if resp_insert.status_code in [200, 201, 204]:
                     total_inseridos += len(formulas_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(formulas_dados)} fórmulas inseridas")
                 else:
@@ -2374,18 +2407,18 @@ def sync_missing_rastreabilidade():
             
             if rastros_dados:
                 headers_insert = headers.copy()
-                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
 
-                # Usar retry com backoff exponencial
                 resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade",
                     headers_insert,
                     rastros_dados,
+                    params={'on_conflict': 'codigo_processo_original'},
                     max_tentativas=3,
                     timeout=60
                 )
 
-                if resp_insert.status_code in [200, 201]:
+                if resp_insert.status_code in [200, 201, 204]:
                     total_inseridos += len(rastros_dados)
                     logger.info(f"   ✅ Lote {i//1000 + 1}: {len(rastros_dados)} registros inseridos")
                 else:
@@ -2585,18 +2618,18 @@ def sync_missing_formulas_itens():
 
             if batch_insert:
                 headers_insert = headers.copy()
-                headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+                headers_insert['Prefer'] = 'resolution=merge-duplicates,return=representation'
 
-                # Usar retry com backoff exponencial
                 resp_insert = inserir_com_retry(
                     f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
                     headers_insert,
                     batch_insert,
+                    params={'on_conflict': 'codigo_atendimento_original,numero_formula,numero_linha'},
                     max_tentativas=3,
                     timeout=60
                 )
 
-                if resp_insert.status_code in [200, 201]:
+                if resp_insert.status_code in [200, 201, 204]:
                     total_inseridos += len(batch_insert)
                     logger.info(f"   ✅ Lote {i//100 + 1}: {len(batch_insert)} itens inseridos")
                 else:
@@ -3182,6 +3215,14 @@ def sync_summary():
     total_firebird = 0
     total_supabase = 0
     avisos = []
+    cache_tabelas = {}
+
+    with summary_lock:
+        if summary_cache['payload']:
+            cache_tabelas = {
+                t['tabela']: t
+                for t in summary_cache['payload'].get('tabelas', [])
+            }
 
     try:
         for tab in tabelas:
@@ -3200,6 +3241,16 @@ def sync_summary():
             except Exception as exc_sb:
                 avisos.append(f"Falha ao contar Supabase.{tab['nome']}: {exc_sb}")
                 logger.warning("⚠️  Falha ao contar registros no Supabase (%s): %s", tab['nome'], exc_sb)
+
+            if total_fb is None and cache_tabelas.get(tab['nome']):
+                total_fb = cache_tabelas[tab['nome']].get('firebird')
+                if total_fb is not None:
+                    avisos.append(f"Usando contagem Firebird em cache para {tab['nome']}")
+
+            if total_sb is None and cache_tabelas.get(tab['nome']):
+                total_sb = cache_tabelas[tab['nome']].get('supabase')
+                if total_sb is not None:
+                    avisos.append(f"Usando contagem Supabase em cache para {tab['nome']}")
 
             if total_fb is not None:
                 total_firebird += total_fb
@@ -3220,6 +3271,12 @@ def sync_summary():
 
         if not resultado_tabelas:
             raise Exception('Nenhuma tabela processada.')
+
+        if total_firebird == 0 and cache_tabelas:
+            total_firebird = summary_cache['payload'].get('total_firebird', 0) or 0
+
+        if total_supabase == 0 and cache_tabelas:
+            total_supabase = summary_cache['payload'].get('total_supabase', 0) or 0
 
         if total_firebird == 0 or total_supabase is None:
             percentual_geral = None
