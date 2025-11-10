@@ -77,6 +77,13 @@ sync_state = {
     'trigger': None
 }
 
+# Cache para o resumo de sincronização
+summary_lock = Lock()
+summary_cache = {
+    'payload': None,
+    'timestamp': None
+}
+
 
 def _atualizar_estado_sync(**kwargs):
     """Atualiza o dicionário de estado da sincronização com lock."""
@@ -409,28 +416,112 @@ def conectar_firebird():
     )
 
 
-def contar_supabase_registros(tabela_supabase):
-    """Retorna a contagem total de registros em uma tabela do Supabase."""
+def contar_supabase_registros(tabela_supabase, max_tentativas=4):
+    """Retorna a contagem total de registros em uma tabela do Supabase usando GET head=true."""
     headers_count = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
         'Accept-Profile': 'api',
-        'Prefer': 'count=exact'
+        'Prefer': 'count=exact',
+        'Range': '0-0',
+        'Range-Unit': 'items'
     }
-    resp = requests.get(
-        f"{SUPABASE_URL}/rest/v1/{tabela_supabase}",
-        headers=headers_count,
-        params={'select': 'id', 'limit': 0},
-        timeout=30
-    )
-    if resp.status_code != 200:
-        raise Exception(f"Falha ao contar registros em {tabela_supabase}: {resp.status_code} - {resp.text[:200]}")
-    content_range = resp.headers.get('Content-Range', '0/0')
-    try:
-        total = int(content_range.split('/')[-1])
-    except (ValueError, IndexError):
-        total = 0
-    return total
+    params = {
+        'select': 'id',
+        'head': 'true'
+    }
+
+    for tentativa in range(max_tentativas):
+        try:
+            resp = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{tabela_supabase}",
+                headers=headers_count,
+                params=params,
+                timeout=15
+            )
+
+            status = resp.status_code
+            if status in (200, 206):
+                content_range = (
+                    resp.headers.get('Content-Range')
+                    or resp.headers.get('content-range')
+                )
+                if not content_range or '/' not in content_range:
+                    logger.warning(
+                        "⚠️  Supabase retornou status %s sem Content-Range ao contar %s",
+                        status,
+                        tabela_supabase
+                    )
+                    return None
+
+                try:
+                    return int(content_range.split('/')[-1])
+                except (ValueError, IndexError) as exc:
+                    logger.error(
+                        "❌ Não foi possível interpretar Content-Range '%s' para %s",
+                        content_range,
+                        tabela_supabase
+                    )
+                    raise Exception(
+                        f"Não foi possível interpretar Content-Range '{content_range}' para {tabela_supabase}"
+                    ) from exc
+
+            if status == 429:
+                espera = 2 ** tentativa
+                logger.warning(
+                    "⚠️  Rate limiting ao contar %s (tentativa %s/%s) - aguardando %ss",
+                    tabela_supabase,
+                    tentativa + 1,
+                    max_tentativas,
+                    espera
+                )
+                time.sleep(espera)
+                continue
+
+            if 500 <= status < 600:
+                espera = 2 ** tentativa
+                logger.warning(
+                    "⚠️  Erro %s do Supabase ao contar %s (tentativa %s/%s) - aguardando %ss",
+                    status,
+                    tabela_supabase,
+                    tentativa + 1,
+                    max_tentativas,
+                    espera
+                )
+                time.sleep(espera)
+                continue
+
+            raise Exception(f"Falha ao contar registros em {tabela_supabase}: {status} - {resp.text[:200]}")
+
+        except requests.exceptions.Timeout:
+            espera = 2 ** tentativa
+            logger.warning(
+                "⚠️  Timeout ao contar %s (tentativa %s/%s) - aguardando %ss",
+                tabela_supabase,
+                tentativa + 1,
+                max_tentativas,
+                espera
+            )
+            if tentativa < max_tentativas - 1:
+                time.sleep(espera)
+                continue
+            raise
+
+        except requests.exceptions.ConnectionError as exc_conn:
+            espera = 2 ** tentativa
+            logger.warning(
+                "⚠️  Erro de conexão ao contar %s (tentativa %s/%s): %s",
+                tabela_supabase,
+                tentativa + 1,
+                max_tentativas,
+                exc_conn
+            )
+            if tentativa < max_tentativas - 1:
+                time.sleep(espera)
+                continue
+            raise
+
+    raise Exception(f"Falha ao contar registros em {tabela_supabase} após {max_tentativas} tentativas")
 
 def sync_clientes_novos():
     """Sincroniza TODOS os clientes novos (SEM limitação)
@@ -3040,75 +3131,131 @@ def sync_summary():
     try:
         conn = conectar_firebird()
         cursor = conn.cursor()
+    except Exception as exc:
+        logger.error("❌ Não foi possível conectar ao Firebird para gerar resumo: %s", exc)
+        with summary_lock:
+            if summary_cache['payload']:
+                payload_cache = dict(summary_cache['payload'])
+                payload_cache.setdefault('avisos', []).append('Resumo retornado do cache por indisponibilidade do Firebird.')
+                payload_cache['origem'] = 'cache'
+                payload_cache['sucesso'] = True
+                return jsonify(payload_cache)
+        return jsonify({
+            'sucesso': False,
+            'erro': f'Não foi possível conectar ao Firebird: {exc}'
+        }), 503
 
-        tabelas = [
-            {
-                'nome': 'prime_clientes',
-                'firebird': 'SELECT COUNT(*) FROM CLIENTE WHERE ATIVO = -1 AND CODIGO < 500000',
-                'supabase': 'prime_clientes'
-            },
-            {
-                'nome': 'prime_pedidos',
-                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A1 WHERE CODIGO_CLIENTE IS NOT NULL',
-                'supabase': 'prime_pedidos'
-            },
-            {
-                'nome': 'prime_formulas',
-                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A2',
-                'supabase': 'prime_formulas'
-            },
-            {
-                'nome': 'prime_formulas_itens',
-                'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A3 WHERE CODIGO_ATEND_A1 IS NOT NULL',
-                'supabase': 'prime_formulas_itens'
-            },
-            {
-                'nome': 'prime_rastreabilidade',
-                'firebird': 'SELECT COUNT(*) FROM PROCESSO_MANIPULACAO',
-                'supabase': 'prime_rastreabilidade'
-            },
-            {
-                'nome': 'prime_tipos_processo',
-                'firebird': 'SELECT COUNT(*) FROM FORMAFARMACEUTICA_PROCESSO_TIPO',
-                'supabase': 'prime_tipos_processo'
-            }
-        ]
+    tabelas = [
+        {
+            'nome': 'prime_clientes',
+            'firebird': 'SELECT COUNT(*) FROM CLIENTE WHERE ATIVO = -1 AND CODIGO < 500000',
+            'supabase': 'prime_clientes'
+        },
+        {
+            'nome': 'prime_pedidos',
+            'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A1 WHERE CODIGO_CLIENTE IS NOT NULL',
+            'supabase': 'prime_pedidos'
+        },
+        {
+            'nome': 'prime_formulas',
+            'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A2',
+            'supabase': 'prime_formulas'
+        },
+        {
+            'nome': 'prime_formulas_itens',
+            'firebird': 'SELECT COUNT(*) FROM ATENDIMENTO_A3 WHERE CODIGO_ATEND_A1 IS NOT NULL',
+            'supabase': 'prime_formulas_itens'
+        },
+        {
+            'nome': 'prime_rastreabilidade',
+            'firebird': 'SELECT COUNT(*) FROM PROCESSO_MANIPULACAO',
+            'supabase': 'prime_rastreabilidade'
+        },
+        {
+            'nome': 'prime_tipos_processo',
+            'firebird': 'SELECT COUNT(*) FROM FORMAFARMACEUTICA_PROCESSO_TIPO',
+            'supabase': 'prime_tipos_processo'
+        }
+    ]
 
-        resultado_tabelas = []
-        total_firebird = 0
-        total_supabase = 0
+    resultado_tabelas = []
+    total_firebird = 0
+    total_supabase = 0
+    avisos = []
 
+    try:
         for tab in tabelas:
-            cursor.execute(tab['firebird'])
-            total_fb = cursor.fetchone()[0]
-            total_sb = contar_supabase_registros(tab['supabase'])
+            total_fb = None
+            total_sb = None
+
+            try:
+                cursor.execute(tab['firebird'])
+                total_fb = cursor.fetchone()[0]
+            except Exception as exc_fb:
+                avisos.append(f"Falha ao contar Firebird.{tab['nome']}: {exc_fb}")
+                logger.warning("⚠️  Falha ao contar registros no Firebird (%s): %s", tab['nome'], exc_fb)
+
+            try:
+                total_sb = contar_supabase_registros(tab['supabase'])
+            except Exception as exc_sb:
+                avisos.append(f"Falha ao contar Supabase.{tab['nome']}: {exc_sb}")
+                logger.warning("⚠️  Falha ao contar registros no Supabase (%s): %s", tab['nome'], exc_sb)
+
+            if total_fb is not None:
+                total_firebird += total_fb
+            if total_sb is not None:
+                total_supabase += total_sb
 
             resultado_tabelas.append({
                 'tabela': tab['nome'],
                 'firebird': total_fb,
                 'supabase': total_sb,
-                'faltantes': total_fb - total_sb,
-                'percentual': round((total_sb / total_fb * 100), 2) if total_fb else 100.0
+                'faltantes': (total_fb - total_sb) if (total_fb is not None and total_sb is not None) else None,
+                'percentual': (
+                    round((total_sb / total_fb * 100), 2)
+                    if (total_fb not in (None, 0) and total_sb is not None)
+                    else None
+                )
             })
 
-            total_firebird += total_fb
-            total_supabase += total_sb
+        if not resultado_tabelas:
+            raise Exception('Nenhuma tabela processada.')
 
-        return jsonify({
+        if total_firebird == 0 or total_supabase is None:
+            percentual_geral = None
+        else:
+            percentual_geral = round((total_supabase / total_firebird * 100), 2) if total_firebird else 100.0
+
+        payload = {
             'sucesso': True,
+            'origem': 'tempo-real',
             'atualizado_em': datetime.now().isoformat(),
             'total_firebird': total_firebird,
             'total_supabase': total_supabase,
-            'faltantes_totais': total_firebird - total_supabase,
-            'percentual_geral': round((total_supabase / total_firebird * 100), 2) if total_firebird else 100.0,
-            'tabelas': resultado_tabelas
-        })
+            'faltantes_totais': (total_firebird - total_supabase) if total_firebird and total_supabase is not None else None,
+            'percentual_geral': percentual_geral,
+            'tabelas': resultado_tabelas,
+            'avisos': avisos or None
+        }
 
-    except Exception as e:
-        logger.error(f"❌ Erro ao gerar resumo de sincronização: {e}")
+        with summary_lock:
+            summary_cache['payload'] = payload
+            summary_cache['timestamp'] = datetime.now().isoformat()
+
+        return jsonify(payload)
+
+    except Exception as exc:
+        logger.error("❌ Erro ao gerar resumo de sincronização: %s", exc)
+        with summary_lock:
+            if summary_cache['payload']:
+                payload_cache = dict(summary_cache['payload'])
+                payload_cache.setdefault('avisos', []).append(str(exc))
+                payload_cache['origem'] = 'cache'
+                payload_cache['sucesso'] = True
+                return jsonify(payload_cache)
         return jsonify({
             'sucesso': False,
-            'erro': str(e)
+            'erro': str(exc)
         }), 500
     finally:
         if conn:
