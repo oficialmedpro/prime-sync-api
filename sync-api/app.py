@@ -74,7 +74,10 @@ sync_state = {
     'last_duration_seconds': None,
     'last_error': None,
     'last_result': None,
-    'trigger': None
+    'trigger': None,
+    'current_phase': None,
+    'last_progress': None,
+    'last_heartbeat': None
 }
 
 # Cache para o resumo de sincronização
@@ -89,6 +92,22 @@ def _atualizar_estado_sync(**kwargs):
     """Atualiza o dicionário de estado da sincronização com lock."""
     with sync_lock:
         sync_state.update(kwargs)
+
+
+def _registrar_progresso_sync(fase, detalhe=None, progresso=None):
+    """Atualiza o estado com informações de progresso para monitoramento."""
+    timestamp = datetime.now().isoformat()
+    progresso_payload = {
+        'fase': fase,
+        'detalhe': detalhe,
+        'progresso': progresso,
+        'timestamp': timestamp
+    }
+    _atualizar_estado_sync(
+        current_phase=fase,
+        last_progress=progresso_payload,
+        last_heartbeat=timestamp
+    )
 
 def limpar_string(texto):
     """Limpa strings removendo caracteres inválidos"""
@@ -417,7 +436,7 @@ def conectar_firebird():
 
 
 def contar_supabase_registros(tabela_supabase, max_tentativas=4):
-    """Retorna a contagem total de registros em uma tabela do Supabase usando GET head=true."""
+    """Retorna a contagem total de registros em uma tabela do Supabase usando HEAD."""
     headers_count = {
         'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
@@ -428,17 +447,14 @@ def contar_supabase_registros(tabela_supabase, max_tentativas=4):
     }
     params = {
         'select': 'id',
-        'head': 'true'
+        'limit': 1
     }
 
     for tentativa in range(max_tentativas):
         try:
-            resp = requests.get(
-                f"{SUPABASE_URL}/rest/v1/{tabela_supabase}",
-                headers=headers_count,
-                params=params,
-                timeout=15
-            )
+            url = f"{SUPABASE_URL}/rest/v1/{tabela_supabase}"
+
+            resp = requests.get(url, headers=headers_count, params=params, timeout=15)
 
             status = resp.status_code
             if status in (200, 206):
@@ -2700,6 +2716,7 @@ def executar_sync_completa(trigger='manual'):
         logger.info("🚀 SINCRONIZAÇÃO INCREMENTAL V2.0 - COM AUDITORIA")
         logger.info("=" * 70)
         logger.info(f"🎯 Disparo: {trigger}")
+        _registrar_progresso_sync('iniciando', 'Preparando auditoria')
 
         # Registrar início na auditoria
         auditoria_id = iniciar_auditoria(
@@ -2707,6 +2724,7 @@ def executar_sync_completa(trigger='manual'):
             tabela_destino='supabase',
             total_firebird=0  # Será atualizado se necessário
         )
+        _registrar_progresso_sync('auditoria', 'Auditoria registrada', {'auditoria_id': auditoria_id})
 
         # Sincronizar na ordem correta (respeitando dependências)
         # 1. Clientes primeiro (não depende de nada)
@@ -2714,6 +2732,7 @@ def executar_sync_completa(trigger='manual'):
         logger.info("1️⃣ SINCRONIZANDO CLIENTES (ordem: 1/6)")
         logger.info("=" * 70)
         try:
+            _registrar_progresso_sync('clientes', 'Incremental: novos registros')
             result_clientes = sync_clientes_novos()
             logger.info(f"📋 Clientes: {result_clientes}")
             if result_clientes.get('erro'):
@@ -2724,7 +2743,12 @@ def executar_sync_completa(trigger='manual'):
             logger.info("1️⃣.1 SINCRONIZANDO CLIENTES FALTANTES (auto-correção)")
             logger.info("=" * 70)
             try:
+                _registrar_progresso_sync('clientes', 'Auto-correção de faltantes (preparando)')
                 result_clientes_missing = sync_missing_clientes()
+                _registrar_progresso_sync('clientes', 'Auto-correção de faltantes concluída', {
+                    'sincronizados': result_clientes_missing.get('inseridos', 0),
+                    'faltantes_restantes': result_clientes_missing.get('total_faltantes')
+                })
                 # SEMPRE adicionar ao total, mesmo se for 0 (para logar que foi executado)
                 logger.info(f"✅ Clientes faltantes: {result_clientes_missing.get('inseridos', 0)} sincronizados")
                 result_clientes['inseridos'] = result_clientes.get('inseridos', 0) + result_clientes_missing.get('inseridos', 0)
@@ -2736,11 +2760,17 @@ def executar_sync_completa(trigger='manual'):
             logger.error(f"❌ Erro crítico em clientes: {e}", exc_info=True)
             result_clientes = {'inseridos': 0, 'erro': str(e)}
 
+        _registrar_progresso_sync('clientes', 'Concluído', {
+            'inseridos': result_clientes.get('inseridos', 0),
+            'erro': result_clientes.get('erro')
+        })
+
         # 2. Pedidos (depende de clientes)
         logger.info("\n" + "=" * 70)
         logger.info("2️⃣ SINCRONIZANDO PEDIDOS (ordem: 2/6)")
         logger.info("=" * 70)
         try:
+            _registrar_progresso_sync('pedidos', 'Incremental: novos registros')
             result_pedidos = sync_pedidos_novos()
             logger.info(f"📋 Pedidos: {result_pedidos}")
             if result_pedidos.get('erro'):
@@ -2766,6 +2796,10 @@ def executar_sync_completa(trigger='manual'):
                     inseridos_iteracao = result_pedidos_missing.get('inseridos', 0)
                     total_faltantes = result_pedidos_missing.get('total_faltantes', 0)
                     total_pedidos_missing += inseridos_iteracao
+                    _registrar_progresso_sync('pedidos', f'Auto-correção iter {iteracao}', {
+                        'inseridos_iteracao': inseridos_iteracao,
+                        'faltantes': total_faltantes
+                    })
 
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} pedidos sincronizados (faltantes: {total_faltantes})")
 
@@ -2796,11 +2830,18 @@ def executar_sync_completa(trigger='manual'):
             logger.error(f"❌ Erro crítico em pedidos: {e}", exc_info=True)
             result_pedidos = {'inseridos': 0, 'erro': str(e)}
 
+        _registrar_progresso_sync('pedidos', 'Concluído', {
+            'inseridos': result_pedidos.get('inseridos', 0),
+            'faltantes_restantes': result_pedidos.get('faltantes_restantes'),
+            'erro': result_pedidos.get('erro')
+        })
+
         # 3. Fórmulas (depende de pedidos)
         logger.info("\n" + "=" * 70)
         logger.info("3️⃣ SINCRONIZANDO FÓRMULAS (ordem: 3/6)")
         logger.info("=" * 70)
         try:
+            _registrar_progresso_sync('formulas', 'Incremental: novas fórmulas')
             result_formulas = sync_formulas_novas()
             logger.info(f"📋 Fórmulas: {result_formulas}")
             if result_formulas.get('erro'):
@@ -2824,6 +2865,10 @@ def executar_sync_completa(trigger='manual'):
                     inseridos_iteracao = result_formulas_missing.get('inseridos', 0)
                     total_faltantes = result_formulas_missing.get('total_faltantes', 0)
                     total_formulas_missing += inseridos_iteracao
+                    _registrar_progresso_sync('formulas', f'Auto-correção iter {iteracao}', {
+                        'inseridos_iteracao': inseridos_iteracao,
+                        'faltantes': total_faltantes
+                    })
 
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} fórmulas sincronizadas (faltantes: {total_faltantes})")
 
@@ -2853,11 +2898,18 @@ def executar_sync_completa(trigger='manual'):
             logger.error(f"❌ Erro crítico em fórmulas: {e}", exc_info=True)
             result_formulas = {'inseridos': 0, 'erro': str(e)}
 
+        _registrar_progresso_sync('formulas', 'Concluído', {
+            'inseridos': result_formulas.get('inseridos', 0),
+            'faltantes_restantes': result_formulas.get('faltantes_restantes'),
+            'erro': result_formulas.get('erro')
+        })
+
         # 4. Itens de Fórmulas (depende de fórmulas)
         logger.info("\n" + "=" * 70)
         logger.info("4️⃣ SINCRONIZANDO ITENS DE FÓRMULAS (ordem: 4/6)")
         logger.info("=" * 70)
         try:
+            _registrar_progresso_sync('itens_formula', 'Incremental: novos itens')
             result_itens = sync_formulas_itens_novos()
             logger.info(f"📋 Itens: {result_itens}")
             if result_itens.get('erro'):
@@ -2881,6 +2933,10 @@ def executar_sync_completa(trigger='manual'):
                     inseridos_iteracao = result_itens_missing.get('inseridos', 0)
                     total_faltantes = result_itens_missing.get('total_faltantes', 0)
                     total_itens_missing += inseridos_iteracao
+                    _registrar_progresso_sync('itens_formula', f'Auto-correção iter {iteracao}', {
+                        'inseridos_iteracao': inseridos_iteracao,
+                        'faltantes': total_faltantes
+                    })
 
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} itens sincronizados (faltantes: {total_faltantes})")
 
@@ -2910,11 +2966,18 @@ def executar_sync_completa(trigger='manual'):
             logger.error(f"❌ Erro crítico em itens: {e}", exc_info=True)
             result_itens = {'inseridos': 0, 'erro': str(e)}
 
+        _registrar_progresso_sync('itens_formula', 'Concluído', {
+            'inseridos': result_itens.get('inseridos', 0),
+            'faltantes_restantes': result_itens.get('faltantes_restantes'),
+            'erro': result_itens.get('erro')
+        })
+
         # 5. Tipos Processo (FASE 1 - tabela de referência, SEM dependências)
         logger.info("\n" + "=" * 70)
         logger.info("5️⃣ SINCRONIZANDO TIPOS PROCESSO (ordem: 5/6 - FASE 1)")
         logger.info("=" * 70)
         try:
+            _registrar_progresso_sync('tipos_processo', 'Incremental: tipos processo')
             result_tipos = sync_tipos_processo_novos()
             logger.info(f"📋 Tipos Processo: {result_tipos}")
             if result_tipos.get('erro'):
@@ -2923,12 +2986,18 @@ def executar_sync_completa(trigger='manual'):
             logger.error(f"❌ Erro crítico em tipos processo: {e}", exc_info=True)
             result_tipos = {'inseridos': 0, 'erro': str(e)}
 
+        _registrar_progresso_sync('tipos_processo', 'Concluído', {
+            'inseridos': result_tipos.get('inseridos', 0),
+            'erro': result_tipos.get('erro')
+        })
+
         # 6. Rastreabilidade (FASE 3 - depende de pedidos + tipos_processo)
         logger.info("\n" + "=" * 70)
         logger.info("6️⃣ SINCRONIZANDO RASTREABILIDADE (ordem: 6/6 - FASE 3)")
         logger.info("=" * 70)
         logger.info("   ⚠️  Dependências: prime_pedidos ✅ + prime_tipos_processo ✅")
         try:
+            _registrar_progresso_sync('rastreabilidade', 'Incremental: novos registros')
             result_rastreabilidade = sync_rastreabilidade_nova()
             logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
             if result_rastreabilidade.get('erro'):
@@ -2952,6 +3021,10 @@ def executar_sync_completa(trigger='manual'):
                     inseridos_iteracao = result_rastreabilidade_missing.get('inseridos', 0)
                     total_faltantes = result_rastreabilidade_missing.get('total_faltantes', 0)
                     total_rastreabilidade_missing += inseridos_iteracao
+                    _registrar_progresso_sync('rastreabilidade', f'Auto-correção iter {iteracao}', {
+                        'inseridos_iteracao': inseridos_iteracao,
+                        'faltantes': total_faltantes
+                    })
 
                     logger.info(f"   ✅ Iteração {iteracao}: {inseridos_iteracao} registros sincronizados (faltantes: {total_faltantes})")
 
@@ -2980,6 +3053,12 @@ def executar_sync_completa(trigger='manual'):
         except Exception as e:
             logger.error(f"❌ Erro crítico em rastreabilidade: {e}", exc_info=True)
             result_rastreabilidade = {'inseridos': 0, 'erro': str(e)}
+
+        _registrar_progresso_sync('rastreabilidade', 'Concluído', {
+            'inseridos': result_rastreabilidade.get('inseridos', 0),
+            'faltantes_restantes': result_rastreabilidade.get('faltantes_restantes'),
+            'erro': result_rastreabilidade.get('erro')
+        })
 
         tempo_total = (datetime.now() - inicio).total_seconds()
 
@@ -3065,10 +3144,18 @@ def executar_sync_completa(trigger='manual'):
         else:
             logger.info(f"✅ CONCLUÍDO COM SUCESSO - Total: {total_inseridos} registros em {tempo_total:.1f}s")
 
+        _registrar_progresso_sync('finalizando', 'Resultado consolidado', {
+            'total_inseridos': total_inseridos,
+            'avisos': len(erros) if erros else 0,
+            'duracao_segundos': tempo_total
+        })
+
         return resultado
 
     except Exception as e:
         logger.error(f"❌ Erro na sincronização: {e}")
+
+        _registrar_progresso_sync('erro', 'Exceção na sincronização', {'erro': str(e)})
 
         if auditoria_id:
             finalizar_auditoria(
@@ -3083,25 +3170,37 @@ def executar_sync_completa(trigger='manual'):
 def _executar_sync_background(trigger):
     """Executa a sincronização em uma thread dedicada atualizando o estado global."""
     inicio_thread = datetime.now()
+    _registrar_progresso_sync('iniciando', f'Trigger: {trigger}')
     try:
         resultado = executar_sync_completa(trigger=trigger)
         fim_thread = datetime.now()
+        _registrar_progresso_sync('finalizado', 'Sincronização concluída', {
+            'sucesso': True,
+            'duracao_segundos': (fim_thread - inicio_thread).total_seconds()
+        })
         _atualizar_estado_sync(
             running=False,
             finished_at=fim_thread.isoformat(),
             last_duration_seconds=(fim_thread - inicio_thread).total_seconds(),
             last_error=None,
-            last_result=resultado
+            last_result=resultado,
+            current_phase='finalizado',
+            last_heartbeat=fim_thread.isoformat()
         )
     except Exception as exc:
         fim_thread = datetime.now()
         logger.exception("❌ Falha na execução em background: %s", exc)
+        _registrar_progresso_sync('erro', 'Falha na sincronização', {
+            'erro': str(exc)
+        })
         _atualizar_estado_sync(
             running=False,
             finished_at=fim_thread.isoformat(),
             last_duration_seconds=(fim_thread - inicio_thread).total_seconds(),
             last_error=str(exc),
-            last_result=None
+            last_result=None,
+            current_phase='erro',
+            last_heartbeat=fim_thread.isoformat()
         )
 
 
@@ -3130,7 +3229,10 @@ def sync():
             started_at=agora.isoformat(),
             finished_at=None,
             last_error=None,
-            trigger=trigger
+            trigger=trigger,
+            current_phase='iniciando',
+            last_progress=None,
+            last_heartbeat=agora.isoformat()
         )
 
     worker = Thread(target=_executar_sync_background, args=(trigger,), daemon=True)

@@ -34,6 +34,15 @@ def imprimir_status(status_payload):
     print(f"Finalizado às........: {status.get('finished_at')}")
     print(f"Última duração (s)...: {status.get('last_duration_seconds')}")
     print(f"Último erro..........: {status.get('last_error')}")
+    print(f"Fase atual...........: {status.get('current_phase')}")
+    print(f"Último heartbeat.....: {status.get('last_heartbeat')}")
+    progresso = status.get('last_progress') or {}
+    if progresso:
+        print("Último progresso.....:")
+        print(f"  - Fase............: {progresso.get('fase')}")
+        print(f"  - Detalhe.........: {progresso.get('detalhe')}")
+        print(f"  - Progresso.......: {progresso.get('progresso')}")
+        print(f"  - Timestamp.......: {progresso.get('timestamp')}")
     if status.get('last_result'):
         resultado = status['last_result']
         print("\nResumo da última execução:")
@@ -73,7 +82,7 @@ def imprimir_summary():
     print(f"Percentual Geral.....: {resumo.get('percentual_geral')}%")
 
     print("\nPor tabela:")
-            for linha in resumo.get('tabelas', []):
+    for linha in resumo.get('tabelas', []):
                 firebird_val = linha.get('firebird')
                 supabase_val = linha.get('supabase')
                 faltantes_val = linha.get('faltantes')
