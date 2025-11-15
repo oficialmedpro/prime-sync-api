@@ -103,6 +103,60 @@ def get_ultimo_id_supabase(tabela, campo_id='codigo_cliente_original'):
         logger.error(f"Erro ao buscar último ID de {tabela}: {e}")
         return 0
 
+def buscar_todos_codigos_supabase(tabela, campo_id='codigo_cliente_original', filtro_especial=None):
+    """Busca TODOS os códigos do Supabase usando paginação completa (corrigido para evitar gaps)"""
+    codigos = set()
+    offset = 0
+    limit = 1000
+    
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{tabela}"
+        
+        while True:
+            params = {
+                'select': campo_id,
+                'order': f'{campo_id}.asc',
+                'limit': limit,
+                'offset': offset
+            }
+            
+            # Para clientes, ignorar códigos especiais (> 500000)
+            if filtro_especial:
+                params[campo_id] = filtro_especial
+            
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                dados = response.json()
+                if not dados:
+                    break
+                
+                codigos.update([d[campo_id] for d in dados])
+                
+                if len(dados) < limit:
+                    break
+                
+                offset += limit
+            elif response.status_code == 206:  # Partial Content
+                # Continuar mesmo com 206
+                dados = response.json()
+                if not dados:
+                    break
+                codigos.update([d[campo_id] for d in dados])
+                if len(dados) < limit:
+                    break
+                offset += limit
+            else:
+                logger.warning(f"Erro ao buscar códigos: {response.status_code}")
+                break
+        
+        logger.info(f"   ✅ Carregados {len(codigos):,} códigos de {tabela}")
+        return codigos
+    
+    except Exception as e:
+        logger.error(f"Erro ao buscar todos códigos de {tabela}: {e}")
+        return codigos
+
 def conectar_firebird():
     """Conecta ao Firebird"""
     return fdb.connect(
@@ -114,21 +168,67 @@ def conectar_firebird():
     )
 
 def sync_clientes_novos():
-    """Sincroniza apenas clientes novos
+    """Sincroniza clientes novos E verifica gaps para preencher
     
     🚨 IMPORTANTE: Busca dados de 3 tabelas:
     1. CLIENTE (dados básicos)
     2. CADASTRO_TELEFONE (telefones - WHERE TIPO_CADASTRO = 1)
     3. CADASTRO_ENDERECO (endereços - WHERE TIPO_CADASTRO = 1)
+    
+    CORRIGIDO V2.1: Verifica TODOS os códigos para identificar gaps
     """
     try:
-        ultimo_codigo = get_ultimo_id_supabase('prime_clientes', 'codigo_cliente_original')
-        logger.info(f"📊 Clientes - Último código: {ultimo_codigo}")
-
+        # Primeiro: buscar TODOS os códigos do Supabase para identificar gaps
+        logger.info("   🔍 Verificando gaps em clientes...")
+        codigos_supabase = buscar_todos_codigos_supabase('prime_clientes', 'codigo_cliente_original', 'lt.500000')
+        max_codigo_sb = max(codigos_supabase) if codigos_supabase else 0
+        logger.info(f"   📊 {len(codigos_supabase):,} clientes no Supabase (max: {max_codigo_sb})")
+        
+        # Buscar todos os códigos do Firebird até o máximo do Supabase
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM CLIENTE
+            WHERE ATIVO = -1
+            AND CODIGO < 500000
+            AND CODIGO <= {max_codigo_sb if max_codigo_sb > 0 else 999999}
+            ORDER BY CODIGO
+        """)
+        
+        codigos_firebird = {row[0] for row in cursor.fetchall()}
+        logger.info(f"   📊 {len(codigos_firebird):,} clientes no Firebird (até código {max_codigo_sb})")
+        
+        # Identificar gaps
+        gaps = codigos_firebird - codigos_supabase
+        if gaps:
+            logger.info(f"   🔴 {len(gaps):,} GAPS encontrados em clientes! Preenchendo...")
+            # Incluir gaps na lista para sincronizar
+            codigos_para_sincronizar = sorted(list(gaps))
+        else:
+            logger.info("   ✅ Nenhum gap encontrado em clientes")
+            codigos_para_sincronizar = []
+        
+        # Buscar novos registros (incremental) E gaps
+        ultimo_codigo = max_codigo_sb
+        logger.info(f"   📊 Buscando clientes novos (código > {ultimo_codigo}) e gaps")
+        
+        # Combinar gaps + novos registros
+        if codigos_para_sincronizar:
+            codigos_query = ','.join(map(str, codigos_para_sincronizar[:1000]))  # Limitar lote de gaps
+            where_condition = f"C.CODIGO IN ({codigos_query})"
+        else:
+            where_condition = f"C.CODIGO > {ultimo_codigo}"
+        
+        # Se houver gaps e também novos registros, buscar ambos
+        if codigos_para_sincronizar and ultimo_codigo > 0:
+            codigos_query = ','.join(map(str, codigos_para_sincronizar[:1000]))
+            where_condition = f"(C.CODIGO IN ({codigos_query}) OR C.CODIGO > {ultimo_codigo})"
+        
         conn = conectar_firebird()
         cursor = conn.cursor()
         
-        # 1. Buscar clientes básicos
+        # 1. Buscar clientes básicos (gaps + novos)
         cursor.execute(f"""
             SELECT 
                 C.CODIGO,
@@ -145,8 +245,8 @@ def sync_clientes_novos():
             FROM CLIENTE C
             LEFT JOIN CIDADEESTADO CE ON C.CODIGO_CIDADEESTADO = CE.CODIGO
             WHERE C.ATIVO = -1
-            AND C.CODIGO > {ultimo_codigo}
             AND C.CODIGO < 500000
+            AND ({where_condition})
             ORDER BY C.CODIGO
             ROWS 1000
         """)
@@ -298,19 +398,31 @@ def sync_clientes_novos():
             }
             clientes_dados.append(cliente)
 
-        # 5. Inserir no Supabase
+        # 5. Inserir no Supabase usando upsert para evitar duplicatas
         url = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-        response = requests.post(url, headers=headers, json=clientes_dados, timeout=30)
+        headers_upsert = headers.copy()
+        headers_upsert['Prefer'] = 'resolution=merge-duplicates'  # Upsert para evitar duplicatas
+        
+        # Inserir em lotes de 500 para evitar timeout
+        total_inseridos = 0
+        for i in range(0, len(clientes_dados), 500):
+            lote = clientes_dados[i:i+500]
+            response = requests.post(url, headers=headers_upsert, json=lote, timeout=60)
+            
+            if response.status_code in [200, 201]:
+                total_inseridos += len(lote)
+                logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} clientes sincronizados")
+            else:
+                logger.error(f"   ❌ Erro ao inserir lote {i//500 + 1}: {response.status_code} - {response.text[:200]}")
 
-        if response.status_code in [200, 201]:
-            logger.info(f"✅ {len(clientes_dados)} clientes sincronizados COM telefones e endereços das tabelas relacionadas")
+        if total_inseridos > 0:
+            logger.info(f"✅ {total_inseridos} clientes sincronizados COM telefones e endereços")
             return {
-                'inseridos': len(clientes_dados),
-                'mensagem': f'{len(clientes_dados)} clientes sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} clientes sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir clientes: {response.status_code} - {response.text[:200]}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'erro': 'Nenhum cliente inserido'}
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_clientes_novos: {e}")
@@ -402,49 +514,78 @@ def sync_pedidos_novos():
         if not pedidos_dados:
             return {'inseridos': 0, 'mensagem': 'Pedidos sem clientes correspondentes'}
 
+        # Inserir usando upsert para evitar duplicatas
         url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-        response = requests.post(url, headers=headers, json=pedidos_dados, timeout=30)
+        headers_upsert = headers.copy()
+        headers_upsert['Prefer'] = 'resolution=merge-duplicates'  # Upsert para evitar duplicatas
+        
+        # Inserir em lotes de 500
+        total_inseridos = 0
+        for i in range(0, len(pedidos_dados), 500):
+            lote = pedidos_dados[i:i+500]
+            response = requests.post(url, headers=headers_upsert, json=lote, timeout=60)
+            
+            if response.status_code in [200, 201]:
+                total_inseridos += len(lote)
+                logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} pedidos sincronizados")
+            else:
+                logger.error(f"   ❌ Erro ao inserir lote {i//500 + 1}: {response.status_code}")
 
-        if response.status_code in [200, 201]:
+        if total_inseridos > 0:
             return {
-                'inseridos': len(pedidos_dados),
-                'mensagem': f'{len(pedidos_dados)} pedidos sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} pedidos sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir pedidos: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'erro': 'Nenhum pedido inserido'}
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_pedidos_novos: {e}")
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_formulas_novas():
-    """Sincroniza fórmulas novas com TEXTOROTULO"""
+    """Sincroniza fórmulas novas com TEXTOROTULO - CORRIGIDO para evitar gaps"""
     try:
-        # Buscar último código de fórmula baseado no pedido
+        logger.info("📋 Sincronizando fórmulas...")
+        
+        # Buscar TODAS as fórmulas existentes no Supabase (chave composta)
+        logger.info("   Buscando fórmulas existentes no Supabase...")
+        formulas_existentes = set()
+        offset = 0
+        limit = 1000
+        
         url_formulas = f"{SUPABASE_URL}/rest/v1/prime_formulas"
-        response = requests.get(
-            url_formulas,
-            headers=headers,
-            params={
-                'select': 'codigo_orcamento_original',
-                'order': 'codigo_orcamento_original.desc',
-                'limit': 1
-            },
-            timeout=10
-        )
+        while True:
+            response = requests.get(
+                url_formulas,
+                headers=headers,
+                params={
+                    'select': 'codigo_orcamento_original,numero_formula',
+                    'order': 'codigo_orcamento_original.asc',
+                    'limit': limit,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            
+            if response.status_code in [200, 206]:
+                dados = response.json()
+                if not dados:
+                    break
+                for f in dados:
+                    formulas_existentes.add((f['codigo_orcamento_original'], f['numero_formula']))
+                if len(dados) < limit:
+                    break
+                offset += limit
+            else:
+                break
+        
+        logger.info(f"   ✅ {len(formulas_existentes):,} fórmulas já existem no Supabase")
 
-        ultimo_codigo = 0
-        if response.status_code == 200:
-            dados = response.json()
-            if dados:
-                ultimo_codigo = dados[0]['codigo_orcamento_original']
-
-        logger.info(f"📊 Fórmulas - Último código atendimento: {ultimo_codigo}")
-
+        # Buscar fórmulas do Firebird
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT
                 A2.CODIGO_ATEND_A1,
                 A2.NUMEROFORMULA,
@@ -452,40 +593,52 @@ def sync_formulas_novas():
                 A2.POSOLOGIA,
                 A2.VALORFORMULA_VENDA
             FROM ATENDIMENTO_A2 A2
-            WHERE A2.CODIGO_ATEND_A1 > {ultimo_codigo}
-            AND A2.CODIGO_ATEND_A1 IS NOT NULL
+            WHERE A2.CODIGO_ATEND_A1 IS NOT NULL
             ORDER BY A2.CODIGO_ATEND_A1, A2.NUMEROFORMULA
-            ROWS 5000
         """)
 
-        novas_formulas = cursor.fetchall()
+        todas_formulas_fb = cursor.fetchall()
         conn.close()
 
-        if not novas_formulas:
-            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula nova'}
+        logger.info(f"   ✅ {len(todas_formulas_fb):,} fórmulas no Firebird")
 
-        logger.info(f"✅ Encontradas {len(novas_formulas)} fórmulas novas")
+        # Identificar fórmulas faltantes
+        formulas_faltantes = []
+        for row in todas_formulas_fb:
+            codigo_atend, num_formula, texto_rotulo, posologia, valor = row
+            chave = (codigo_atend, num_formula)
+            if chave not in formulas_existentes:
+                formulas_faltantes.append(row)
+
+        if not formulas_faltantes:
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula nova ou faltante'}
+
+        logger.info(f"   🔍 {len(formulas_faltantes):,} fórmulas faltantes encontradas")
 
         # Buscar pedidos em lote
-        codigos_orcamento = list(set([row[0] for row in novas_formulas]))
-        url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-        response = requests.get(
-            url_pedidos,
-            headers=headers,
-            params={
-                'select': 'id,codigo_orcamento_original',
-                'codigo_orcamento_original': f'in.({",".join(map(str, codigos_orcamento))})'
-            },
-            timeout=30
-        )
-
+        codigos_orcamento = list(set([row[0] for row in formulas_faltantes]))
         cache_pedidos = {}
-        if response.status_code == 200:
-            for ped in response.json():
-                cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+        offset_pedidos = 0
+        while offset_pedidos < len(codigos_orcamento):
+            lote_pedidos = codigos_orcamento[offset_pedidos:offset_pedidos+500]
+            url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+            response = requests.get(
+                url_pedidos,
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, lote_pedidos))})'
+                },
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                for ped in response.json():
+                    cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+            offset_pedidos += 500
 
         formulas_dados = []
-        for row in novas_formulas:
+        for row in formulas_faltantes:
             codigo_atend, num_formula, texto_rotulo, posologia, valor = row
 
             pedido_id = cache_pedidos.get(codigo_atend)
@@ -496,7 +649,7 @@ def sync_formulas_novas():
                 'pedido_id': pedido_id,
                 'codigo_orcamento_original': codigo_atend,
                 'numero_formula': num_formula,
-                'descricao': limpar_string(texto_rotulo),  # TEXTOROTULO completo!
+                'descricao': limpar_string(texto_rotulo),
                 'posologia': limpar_string(posologia),
                 'valor_formula': float(valor) if valor else 0.0,
                 'updated_at': datetime.now().isoformat()
@@ -506,20 +659,30 @@ def sync_formulas_novas():
         if not formulas_dados:
             return {'inseridos': 0, 'mensagem': 'Fórmulas sem pedidos correspondentes'}
 
-        url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
-        response = requests.post(url, headers=headers, json=formulas_dados, timeout=60)
+        # Inserir em lotes de 500
+        total_inseridos = 0
+        for i in range(0, len(formulas_dados), 500):
+            lote = formulas_dados[i:i+500]
+            url = f"{SUPABASE_URL}/rest/v1/prime_formulas"
+            headers_insert = headers.copy()
+            headers_insert['Prefer'] = 'resolution=ignore-duplicates'  # Evitar duplicatas
+            response = requests.post(url, headers=headers_insert, json=lote, timeout=60)
 
-        if response.status_code in [200, 201]:
-            return {
-                'inseridos': len(formulas_dados),
-                'mensagem': f'{len(formulas_dados)} fórmulas sincronizadas'
-            }
-        else:
-            logger.error(f"❌ Erro ao inserir fórmulas: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            if response.status_code in [200, 201]:
+                total_inseridos += len(lote)
+                logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} fórmulas inseridas")
+            else:
+                logger.error(f"   ❌ Erro ao inserir lote: {response.status_code}")
+
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} fórmulas sincronizadas'
+        }
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_formulas_novas: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_formulas_itens_novos():
@@ -1111,62 +1274,123 @@ def sync_missing():
             'timestamp': datetime.now().isoformat()
         }), 500
 
-@app.route('/sync', methods=['GET', 'POST'])
-def sync():
-    """Endpoint principal de sincronização"""
+def sync_completo_com_gaps():
+    """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
+    logger.info("="*70)
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.1")
+    logger.info("="*70)
+    
+    inicio = datetime.now()
+    total_inseridos = 0
+    
+    # ORDEM DE SINCRONIZAÇÃO (respeitando dependências):
+    # 1. TIPOS_PROCESSO (independente)
+    # 2. CLIENTES (independente)
+    # 3. PEDIDOS (depende de CLIENTES)
+    # 4. FORMULAS (depende de PEDIDOS)
+    # 5. FORMULAS_ITENS (depende de FORMULAS e PEDIDOS)
+    # 6. RASTREABILIDADE (depende de PEDIDOS e TIPOS_PROCESSO)
+    
+    resultados = {}
+    
     try:
+        # 1. TIPOS_PROCESSO (independente - primeiro)
+        logger.info("\n" + "="*70)
+        logger.info("1️⃣ SINCRONIZANDO TIPOS DE PROCESSO (independente)")
         logger.info("="*70)
-        logger.info("🚀 SINCRONIZAÇÃO INCREMENTAL V2.0")
-        logger.info("="*70)
-
-        inicio = datetime.now()
-
-        result_clientes = sync_clientes_novos()
-        logger.info(f"📋 Clientes: {result_clientes}")
-
-        result_pedidos = sync_pedidos_novos()
-        logger.info(f"📋 Pedidos: {result_pedidos}")
-
-        result_formulas = sync_formulas_novas()
-        logger.info(f"📋 Fórmulas: {result_formulas}")
-
-        result_itens = sync_formulas_itens_novos()
-        logger.info(f"📋 Itens: {result_itens}")
-
-        result_rastreabilidade = sync_rastreabilidade_nova()
-        logger.info(f"📋 Rastreabilidade: {result_rastreabilidade}")
-
         result_tipos = sync_tipos_processo_novos()
-        logger.info(f"📋 Tipos Processo: {result_tipos}")
-
+        resultados['tipos_processo'] = result_tipos
+        total_inseridos += result_tipos.get('inseridos', 0)
+        logger.info(f"✅ Tipos Processo: {result_tipos}")
+        
+        # 2. CLIENTES (independente - pode rodar junto com tipos)
+        logger.info("\n" + "="*70)
+        logger.info("2️⃣ SINCRONIZANDO CLIENTES (independente)")
+        logger.info("="*70)
+        result_clientes = sync_clientes_novos()
+        resultados['clientes'] = result_clientes
+        total_inseridos += result_clientes.get('inseridos', 0)
+        logger.info(f"✅ Clientes: {result_clientes}")
+        
+        # 3. PEDIDOS (depende de CLIENTES - depois de clientes)
+        logger.info("\n" + "="*70)
+        logger.info("3️⃣ SINCRONIZANDO PEDIDOS (depende de CLIENTES)")
+        logger.info("="*70)
+        result_pedidos = sync_pedidos_novos()
+        resultados['pedidos'] = result_pedidos
+        total_inseridos += result_pedidos.get('inseridos', 0)
+        logger.info(f"✅ Pedidos: {result_pedidos}")
+        
+        # 4. FORMULAS (depende de PEDIDOS - depois de pedidos)
+        logger.info("\n" + "="*70)
+        logger.info("4️⃣ SINCRONIZANDO FÓRMULAS (depende de PEDIDOS)")
+        logger.info("="*70)
+        result_formulas = sync_formulas_novas()
+        resultados['formulas'] = result_formulas
+        total_inseridos += result_formulas.get('inseridos', 0)
+        logger.info(f"✅ Fórmulas: {result_formulas}")
+        
+        # 5. FORMULAS_ITENS (depende de FORMULAS e PEDIDOS - depois de formulas)
+        logger.info("\n" + "="*70)
+        logger.info("5️⃣ SINCRONIZANDO FORMULAS ITENS (depende de FORMULAS)")
+        logger.info("="*70)
+        result_itens = sync_formulas_itens_novos()
+        resultados['formulas_itens'] = result_itens
+        total_inseridos += result_itens.get('inseridos', 0)
+        logger.info(f"✅ Itens: {result_itens}")
+        
+        # 6. RASTREABILIDADE (depende de PEDIDOS e TIPOS_PROCESSO - depois de pedidos e tipos)
+        logger.info("\n" + "="*70)
+        logger.info("6️⃣ SINCRONIZANDO RASTREABILIDADE (depende de PEDIDOS e TIPOS_PROCESSO)")
+        logger.info("="*70)
+        result_rastreabilidade = sync_rastreabilidade_nova()
+        resultados['rastreabilidade'] = result_rastreabilidade
+        total_inseridos += result_rastreabilidade.get('inseridos', 0)
+        logger.info(f"✅ Rastreabilidade: {result_rastreabilidade}")
+        
         tempo_total = (datetime.now() - inicio).total_seconds()
-
-        resultado = {
+        
+        logger.info("\n" + "="*70)
+        logger.info(f"✅ SINCRONIZAÇÃO COMPLETA CONCLUÍDA!")
+        logger.info(f"   Total inseridos: {total_inseridos}")
+        logger.info(f"   Tempo: {tempo_total:.1f}s")
+        logger.info("="*70)
+        
+        return {
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.0.0',
-            'clientes': result_clientes,
-            'pedidos': result_pedidos,
-            'formulas': result_formulas,
-            'formulas_itens': result_itens,
-            'rastreabilidade': result_rastreabilidade,
-            'tipos_processo': result_tipos,
-            'total_inseridos': (
-                result_clientes.get('inseridos', 0) +
-                result_pedidos.get('inseridos', 0) +
-                result_formulas.get('inseridos', 0) +
-                result_itens.get('inseridos', 0) +
-                result_rastreabilidade.get('inseridos', 0) +
-                result_tipos.get('inseridos', 0)
-            )
+            'version': '2.1.0',
+            'resultados': resultados,
+            'total_inseridos': total_inseridos
+        }
+    
+    except Exception as e:
+        logger.error(f"❌ Erro na sincronização completa: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            'sucesso': False,
+            'erro': str(e),
+            'timestamp': datetime.now().isoformat(),
+            'resultados_parciais': resultados
         }
 
-        logger.info(f"✅ CONCLUÍDO - Total: {resultado['total_inseridos']} registros em {tempo_total:.1f}s")
-        return jsonify(resultado)
+@app.route('/sync', methods=['GET', 'POST'])
+def sync():
+    """Endpoint principal de sincronização - VERSÃO COMPLETA COM GAP FILLING"""
+    try:
+        resultado = sync_completo_com_gaps()
+        
+        if resultado.get('sucesso'):
+            return jsonify(resultado), 200
+        else:
+            return jsonify(resultado), 500
 
     except Exception as e:
-        logger.error(f"❌ Erro na sincronização: {e}")
+        logger.error(f"❌ Erro no endpoint /sync: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'sucesso': False,
             'erro': str(e),
