@@ -843,40 +843,56 @@ def sync_formulas_itens_novos():
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_rastreabilidade_nova():
-    """Sincroniza rastreabilidade nova (ATENDIMENTO_A2.CONTROLERASTREABILIDADE)"""
+    """Sincroniza rastreabilidade com gap filling (PROCESSO_MANIPULACAO)"""
     try:
-        logger.info("📋 Sincronizando rastreabilidade...")
+        logger.info("📋 Sincronizando rastreabilidade (com gap filling)...")
 
         headers = {
             'apikey': SUPABASE_KEY,
             'Authorization': f'Bearer {SUPABASE_KEY}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept-Profile': 'api',
+            'Content-Profile': 'api'
         }
 
-        # Buscar último registro
-        url_ultimo = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
-        response = requests.get(
-            url_ultimo,
-            headers=headers,
-            params={
-                'select': 'codigo_processo_original',
-                'order': 'codigo_processo_original.desc',
-                'limit': 1
-            },
-            timeout=10
-        )
+        # Buscar TODOS os códigos existentes no Supabase (gap filling)
+        logger.info("   🔍 Buscando códigos existentes no Supabase...")
+        codigos_existentes = set()
+        offset = 0
+        limit = 1000
+        while True:
+            url_existentes = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
+            response = requests.get(
+                url_existentes,
+                headers=headers,
+                params={
+                    'select': 'codigo_processo_original',
+                    'order': 'codigo_processo_original.asc',
+                    'limit': limit,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            if response.status_code == 200:
+                dados = response.json()
+                if not dados:
+                    break
+                codigos_existentes.update([r['codigo_processo_original'] for r in dados])
+                if len(dados) < limit:
+                    break
+                offset += limit
+                if offset % 10000 == 0:
+                    logger.info(f"      Carregados {len(codigos_existentes):,} códigos...")
+            else:
+                break
 
-        ultimo_codigo = 0
-        if response.status_code == 200:
-            dados = response.json()
-            if dados:
-                ultimo_codigo = dados[0]['codigo_processo_original']
+        logger.info(f"   📊 {len(codigos_existentes):,} registros já existem no Supabase")
 
-        logger.info(f"📊 Rastreabilidade - Último código: {ultimo_codigo}")
-
+        # Buscar TODOS os registros do Firebird
+        logger.info("   🔍 Buscando todos os registros do Firebird...")
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT
                 PM.CODIGO,
                 PM.TIPO_MOV,
@@ -887,54 +903,78 @@ def sync_rastreabilidade_nova():
                 PM.HORA_PROCESSO,
                 PM.SEQUENCIA
             FROM PROCESSO_MANIPULACAO PM
-            WHERE PM.CODIGO > {ultimo_codigo}
+            WHERE PM.CODIGO_MOV IS NOT NULL
             ORDER BY PM.CODIGO
-            ROWS 1000
         """)
-
-        novos_registros = cursor.fetchall()
+        todas_rastreabilidade_fb = cursor.fetchall()
         conn.close()
 
-        if not novos_registros:
-            return {'inseridos': 0, 'mensagem': 'Nenhum registro novo'}
+        logger.info(f"   ✅ {len(todas_rastreabilidade_fb):,} registros no Firebird")
 
-        logger.info(f"✅ Encontrados {len(novos_registros)} registros novos")
+        # Identificar registros faltantes
+        rastreabilidade_faltantes = []
+        for row in todas_rastreabilidade_fb:
+            codigo_processo = row[0]
+            if codigo_processo not in codigos_existentes:
+                rastreabilidade_faltantes.append(row)
 
-        # Preparar dados com lookup de IDs
+        if not rastreabilidade_faltantes:
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro faltante'}
+
+        logger.info(f"   🔍 {len(rastreabilidade_faltantes):,} registros faltantes encontrados")
+
+        # Buscar pedidos e tipos em lote (cache)
+        codigos_orcamento = list(set([row[2] for row in rastreabilidade_faltantes if row[2]]))
+        codigos_tipos = list(set([row[3] for row in rastreabilidade_faltantes if row[3]]))
+
+        cache_pedidos = {}
+        cache_tipos = {}
+
+        # Cache de pedidos
+        for i in range(0, len(codigos_orcamento), 500):
+            lote = codigos_orcamento[i:i+500]
+            url_pedidos = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+            response = requests.get(
+                url_pedidos,
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, lote))})'
+                },
+                timeout=30
+            )
+            if response.status_code == 200:
+                for ped in response.json():
+                    cache_pedidos[ped['codigo_orcamento_original']] = ped['id']
+
+        # Cache de tipos
+        for i in range(0, len(codigos_tipos), 500):
+            lote = codigos_tipos[i:i+500]
+            url_tipos = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
+            response = requests.get(
+                url_tipos,
+                headers=headers,
+                params={
+                    'select': 'id,codigo_tipo_original',
+                    'codigo_tipo_original': f'in.({",".join(map(str, lote))})'
+                },
+                timeout=30
+            )
+            if response.status_code == 200:
+                for tipo in response.json():
+                    cache_tipos[tipo['codigo_tipo_original']] = tipo['id']
+
+        # Preparar dados
         rastreabilidade_dados = []
-        for row in novos_registros:
+        for row in rastreabilidade_faltantes:
             codigo_orcamento = row[2]
             codigo_tipo = row[3]
 
-            # Buscar pedido_id no Supabase
-            url_pedido = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-            resp_pedido = requests.get(
-                url_pedido,
-                headers=headers,
-                params={'select': 'id', 'codigo_orcamento_original': f'eq.{codigo_orcamento}', 'limit': 1},
-                timeout=10
-            )
+            pedido_id = cache_pedidos.get(codigo_orcamento)
+            tipo_processo_id = cache_tipos.get(codigo_tipo)
 
-            if resp_pedido.status_code != 200 or not resp_pedido.json():
-                logger.warning(f"⚠️ Pedido {codigo_orcamento} não encontrado no Supabase, pulando...")
+            if not pedido_id or not tipo_processo_id:
                 continue
-
-            pedido_id = resp_pedido.json()[0]['id']
-
-            # Buscar tipo_processo_id no Supabase
-            url_tipo = f"{SUPABASE_URL}/rest/v1/prime_tipos_processo"
-            resp_tipo = requests.get(
-                url_tipo,
-                headers=headers,
-                params={'select': 'id', 'codigo_tipo_original': f'eq.{codigo_tipo}', 'limit': 1},
-                timeout=10
-            )
-
-            if resp_tipo.status_code != 200 or not resp_tipo.json():
-                logger.warning(f"⚠️ Tipo de processo {codigo_tipo} não encontrado no Supabase, pulando...")
-                continue
-
-            tipo_processo_id = resp_tipo.json()[0]['id']
 
             rastro = {
                 'codigo_processo_original': row[0],
@@ -953,22 +993,32 @@ def sync_rastreabilidade_nova():
             rastreabilidade_dados.append(rastro)
 
         if not rastreabilidade_dados:
-            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido (sem pedidos/tipos correspondentes)'}
 
-        url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
-        response = requests.post(url, headers=headers, json=rastreabilidade_dados, timeout=60)
+        # Inserir em lotes de 500
+        total_inseridos = 0
+        for i in range(0, len(rastreabilidade_dados), 500):
+            lote = rastreabilidade_dados[i:i+500]
+            url = f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade"
+            headers_insert = headers.copy()
+            headers_insert['Prefer'] = 'resolution=ignore-duplicates'
+            response = requests.post(url, headers=headers_insert, json=lote, timeout=60)
 
-        if response.status_code in [200, 201]:
-            return {
-                'inseridos': len(rastreabilidade_dados),
-                'mensagem': f'{len(rastreabilidade_dados)} registros sincronizados'
-            }
-        else:
-            logger.error(f"❌ Erro ao inserir rastreabilidade: {response.status_code} - {response.text}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            if response.status_code in [200, 201]:
+                total_inseridos += len(lote)
+                logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} registros inseridos")
+            else:
+                logger.error(f"   ❌ Erro ao inserir lote: {response.status_code} - {response.text[:200]}")
+
+        return {
+            'inseridos': total_inseridos,
+            'mensagem': f'{total_inseridos} registros sincronizados'
+        }
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_rastreabilidade_nova: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_tipos_processo_novos():
