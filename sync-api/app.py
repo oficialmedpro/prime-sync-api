@@ -759,81 +759,49 @@ def sync_formulas_novas():
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_formulas_itens_novos():
-    """Sincroniza itens das fórmulas (ATENDIMENTO_A3) - NOVA FUNCIONALIDADE"""
+    """Sincroniza itens das fórmulas (ATENDIMENTO_A3) COM GAP FILLING - V2.2.3"""
     try:
-        # Buscar último código de item
-        url_itens = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
-        response = requests.get(
-            url_itens,
-            headers=headers,
-            params={
-                'select': 'id',
-                'order': 'id.desc',
-                'limit': 1
-            },
-            timeout=10
-        )
-
-        ultimo_id_supabase = 0
-        if response.status_code == 200:
-            dados = response.json()
-            if dados:
-                ultimo_id_supabase = dados[0]['id']
-
-        logger.info(f"📊 Fórmulas Itens - Último ID Supabase: {ultimo_id_supabase}")
-
-        # Buscar também o último codigo_atendimento para sincronização incremental
-        response2 = requests.get(
-            url_itens,
-            headers=headers,
-            params={
-                'select': 'codigo_atendimento_original',
-                'order': 'codigo_atendimento_original.desc',
-                'limit': 1
-            },
-            timeout=10
-        )
-
-        ultimo_codigo = 0
-        if response2.status_code == 200:
-            dados2 = response2.json()
-            if dados2:
-                ultimo_codigo = dados2[0]['codigo_atendimento_original']
+        logger.info("📋 Sincronizando itens de fórmulas (com gap filling)...")
         
-        logger.info(f"📊 Fórmulas Itens - Último código atendimento: {ultimo_codigo}")
-
+        # 1. Buscar TODAS as chaves (codigo_atend, numero_formula, numero_linha) do Supabase
+        logger.info("   🔍 Verificando gaps em itens de fórmulas...")
+        chaves_supabase = set()
+        offset = 0
+        limit = 1000
+        
+        url_itens = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
+        while True:
+            response = requests.get(
+                url_itens,
+                headers=headers,
+                params={
+                    'select': 'codigo_atendimento_original,numero_formula,numero_linha',
+                    'limit': limit,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                dados = response.json()
+                if not dados:
+                    break
+                for item in dados:
+                    chave = (item['codigo_atendimento_original'], item['numero_formula'], item['numero_linha'])
+                    chaves_supabase.add(chave)
+                if len(dados) < limit:
+                    break
+                offset += limit
+            else:
+                break
+        
+        logger.info(f"   📊 {len(chaves_supabase):,} itens no Supabase")
+        
+        # 2. Buscar TODOS os itens do Firebird que têm fórmulas correspondentes no Supabase
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT
-                A3.CODIGO_ATEND_A1,
-                A3.NUMEROFORMULA,
-                A3.NUMEROLINHA,
-                A3.CODIGO_PRODUTO,
-                EG.NOMEPRODUTO,
-                A3.QUANTIDADE,
-                A3.UNIDADE,
-                A3.VALORCUSTO,
-                A3.VALORVENDA,
-                A3.OBSERVACAO
-            FROM ATENDIMENTO_A3 A3
-            LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
-            WHERE A3.CODIGO_ATEND_A1 > {ultimo_codigo}
-            AND A3.CODIGO_ATEND_A1 IS NOT NULL
-            ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
-            ROWS 5000
-        """)
-
-        novos_itens = cursor.fetchall()
-        conn.close()
-
-        if not novos_itens:
-            return {'inseridos': 0, 'mensagem': 'Nenhum item novo'}
-
-        logger.info(f"✅ Encontrados {len(novos_itens)} itens novos")
-
-        # Montar cache COMPLETO de fórmulas com paginação (corrigido 28/10/2025)
-        logger.info("   Montando cache de fórmulas...")
+        
+        # Primeiro, buscar todas as fórmulas do Supabase para filtrar
         cache_formulas = {}
         offset = 0
         while offset < 50000:  # Max 50k fórmulas
@@ -858,10 +826,102 @@ def sync_formulas_itens_novos():
             else:
                 break
         
-        logger.info(f"   Cache fórmulas: {len(cache_formulas)} carregadas")
+        logger.info(f"   📊 {len(cache_formulas):,} fórmulas no Supabase")
+        
+        if not cache_formulas:
+            conn.close()
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula no Supabase'}
+        
+        # Buscar TODOS os itens do Firebird que correspondem a fórmulas no Supabase (em lotes)
+        codigos_atend = list(set([chave[0] for chave in cache_formulas.keys()]))
+        todos_itens_firebird = []
+        lote_size = 1000
+        
+        for i in range(0, len(codigos_atend), lote_size):
+            lote_codigos = codigos_atend[i:i+lote_size]
+            codigos_str = ','.join(map(str, lote_codigos))
+            
+            cursor.execute(f"""
+                SELECT
+                    A3.CODIGO_ATEND_A1,
+                    A3.NUMEROFORMULA,
+                    A3.NUMEROLINHA,
+                    A3.CODIGO_PRODUTO,
+                    EG.NOMEPRODUTO,
+                    A3.QUANTIDADE,
+                    A3.UNIDADE,
+                    A3.VALORCUSTO,
+                    A3.VALORVENDA,
+                    A3.OBSERVACAO
+                FROM ATENDIMENTO_A3 A3
+                LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
+                WHERE A3.CODIGO_ATEND_A1 IN ({codigos_str})
+                AND A3.CODIGO_ATEND_A1 IS NOT NULL
+                ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
+            """)
+            
+            todos_itens_firebird.extend(cursor.fetchall())
+        
+        conn.close()
+        
+        # Identificar gaps
+        chaves_firebird = set()
+        itens_dict = {}
+        for row in todos_itens_firebird:
+            chave = (row[0], row[1], row[2])  # (codigo_atend, num_formula, num_linha)
+            chaves_firebird.add(chave)
+            itens_dict[chave] = row
+        
+        gaps = chaves_firebird - chaves_supabase
+        gaps_list = sorted(list(gaps))
+        
+        if gaps:
+            logger.info(f"   🔴 {len(gaps):,} GAPS encontrados em itens! Preenchendo...")
+        
+        # Buscar novos itens (incremental - código atendimento maior que o máximo)
+        max_codigo = max([chave[0] for chave in chaves_supabase]) if chaves_supabase else 0
+        logger.info(f"   📊 Buscando itens novos (código atendimento > {max_codigo})")
+        
+        conn = conectar_firebird()
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT
+                A3.CODIGO_ATEND_A1,
+                A3.NUMEROFORMULA,
+                A3.NUMEROLINHA,
+                A3.CODIGO_PRODUTO,
+                EG.NOMEPRODUTO,
+                A3.QUANTIDADE,
+                A3.UNIDADE,
+                A3.VALORCUSTO,
+                A3.VALORVENDA,
+                A3.OBSERVACAO
+            FROM ATENDIMENTO_A3 A3
+            LEFT JOIN ESTOQUE_GERAL EG ON A3.CODIGO_PRODUTO = EG.CODIGO
+            WHERE A3.CODIGO_ATEND_A1 > {max_codigo}
+            AND A3.CODIGO_ATEND_A1 IS NOT NULL
+            ORDER BY A3.CODIGO_ATEND_A1, A3.NUMEROFORMULA, A3.NUMEROLINHA
+            ROWS 5000
+        """)
 
+        novos_itens = cursor.fetchall()
+        conn.close()
+        
+        # Combinar gaps + novos itens
+        todos_itens_para_sincronizar = []
+        for chave in gaps_list:
+            if chave in itens_dict:
+                todos_itens_para_sincronizar.append(itens_dict[chave])
+        todos_itens_para_sincronizar.extend(novos_itens)
+        
+        if not todos_itens_para_sincronizar:
+            return {'inseridos': 0, 'mensagem': 'Nenhum item novo ou faltante'}
+        
+        logger.info(f"   📊 Total a sincronizar: {len(todos_itens_para_sincronizar):,} itens (gaps: {len(gaps)}, novos: {len(novos_itens)})")
+
+        # 3. Preparar dados para inserção
         itens_dados = []
-        for row in novos_itens:
+        for row in todos_itens_para_sincronizar:
             (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
              quantidade, unidade, valor_custo, valor_venda, observacao) = row
 
@@ -1244,7 +1304,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.2'
+        'version': '2.2.3'
     })
 
 def sync_missing_pedidos():
@@ -1431,7 +1491,7 @@ def sync_missing():
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.2 - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.3 - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -1514,7 +1574,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.2',
+            'version': '2.2.3',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
