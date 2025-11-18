@@ -184,20 +184,19 @@ def sync_clientes_novos():
         max_codigo_sb = max(codigos_supabase) if codigos_supabase else 0
         logger.info(f"   📊 {len(codigos_supabase):,} clientes no Supabase (max: {max_codigo_sb})")
         
-        # Buscar todos os códigos do Firebird até o máximo do Supabase
+        # Buscar TODOS os códigos do Firebird (sem limitação ao máximo do Supabase para identificar todos os gaps)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO
             FROM CLIENTE
             WHERE ATIVO = -1
             AND CODIGO < 500000
-            AND CODIGO <= {max_codigo_sb if max_codigo_sb > 0 else 999999}
             ORDER BY CODIGO
         """)
         
         codigos_firebird = {row[0] for row in cursor.fetchall()}
-        logger.info(f"   📊 {len(codigos_firebird):,} clientes no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   📊 {len(codigos_firebird):,} clientes no Firebird (total)")
         
         # Identificar gaps
         gaps = codigos_firebird - codigos_supabase
@@ -455,19 +454,18 @@ def sync_pedidos_novos():
         max_codigo_sb = max(codigos_supabase) if codigos_supabase else 0
         logger.info(f"   📊 {len(codigos_supabase):,} pedidos no Supabase (max: {max_codigo_sb})")
         
-        # Buscar todos os códigos do Firebird até o máximo do Supabase
+        # Buscar TODOS os códigos do Firebird (sem limitação ao máximo do Supabase para identificar todos os gaps)
         conn = conectar_firebird()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT CODIGO
             FROM ATENDIMENTO_A1
             WHERE CODIGO_CLIENTE IS NOT NULL
-            AND CODIGO <= {max_codigo_sb if max_codigo_sb > 0 else 999999999}
             ORDER BY CODIGO
         """)
         
         codigos_firebird = {row[0] for row in cursor.fetchall()}
-        logger.info(f"   📊 {len(codigos_firebird):,} pedidos no Firebird (até código {max_codigo_sb})")
+        logger.info(f"   📊 {len(codigos_firebird):,} pedidos no Firebird (total)")
         
         # Identificar gaps
         gaps = codigos_firebird - codigos_supabase
