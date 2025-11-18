@@ -447,112 +447,169 @@ def sync_clientes_novos():
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_pedidos_novos():
-    """Sincroniza apenas pedidos novos"""
+    """Sincroniza pedidos novos E verifica gaps para preencher"""
     try:
-        ultimo_codigo = get_ultimo_id_supabase('prime_pedidos', 'codigo_orcamento_original')
-        logger.info(f"📊 Pedidos - Último código: {ultimo_codigo}")
-
+        # Primeiro: buscar TODOS os códigos do Supabase para identificar gaps
+        logger.info("   🔍 Verificando gaps em pedidos...")
+        codigos_supabase = buscar_todos_codigos_supabase('prime_pedidos', 'codigo_orcamento_original')
+        max_codigo_sb = max(codigos_supabase) if codigos_supabase else 0
+        logger.info(f"   📊 {len(codigos_supabase):,} pedidos no Supabase (max: {max_codigo_sb})")
+        
+        # Buscar todos os códigos do Firebird até o máximo do Supabase
         conn = conectar_firebird()
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT
-                A.CODIGO,
-                A.CODIGO_CLIENTE,
-                A.CADASTRO_DT,
-                A.AVIADA_DT,
-                A.ENTREGUE_DT,
-                A.VALORVENDA,
-                A.OBSERVACAO
-            FROM ATENDIMENTO_A1 A
-            WHERE A.CODIGO_CLIENTE IS NOT NULL
-            AND A.CODIGO > {ultimo_codigo}
-            ORDER BY A.CODIGO
-            ROWS 5000
+            SELECT CODIGO
+            FROM ATENDIMENTO_A1
+            WHERE CODIGO_CLIENTE IS NOT NULL
+            AND CODIGO <= {max_codigo_sb if max_codigo_sb > 0 else 999999999}
+            ORDER BY CODIGO
         """)
-
-        novos_pedidos = cursor.fetchall()
-        conn.close()
-
-        if not novos_pedidos:
+        
+        codigos_firebird = {row[0] for row in cursor.fetchall()}
+        logger.info(f"   📊 {len(codigos_firebird):,} pedidos no Firebird (até código {max_codigo_sb})")
+        
+        # Identificar gaps
+        gaps = codigos_firebird - codigos_supabase
+        gaps_list = sorted(list(gaps)) if gaps else []
+        
+        # Buscar novos registros (incremental)
+        ultimo_codigo = max_codigo_sb
+        logger.info(f"   📊 Buscando pedidos novos (código > {ultimo_codigo})")
+        
+        cursor.execute(f"""
+            SELECT CODIGO
+            FROM ATENDIMENTO_A1
+            WHERE CODIGO_CLIENTE IS NOT NULL
+            AND CODIGO > {ultimo_codigo}
+            ORDER BY CODIGO
+        """)
+        novos_codigos = [row[0] for row in cursor.fetchall()]
+        
+        # Combinar gaps + novos registros
+        todos_codigos_para_sincronizar = sorted(list(set(gaps_list + novos_codigos)))
+        
+        if not todos_codigos_para_sincronizar:
+            conn.close()
             return {'inseridos': 0, 'mensagem': 'Nenhum pedido novo'}
+        
+        if gaps:
+            logger.info(f"   🔴 {len(gaps):,} GAPS encontrados em pedidos! Preenchendo TODOS...")
+        if novos_codigos:
+            logger.info(f"   📊 {len(novos_codigos)} pedidos novos encontrados")
+        logger.info(f"   📊 Total a sincronizar: {len(todos_codigos_para_sincronizar):,} pedidos")
+        
+        # Processar TODOS os códigos em lotes de 1000 até completar
+        total_inseridos = 0
+        lote_size = 1000
+        
+        for lote_idx in range(0, len(todos_codigos_para_sincronizar), lote_size):
+            lote_codigos = todos_codigos_para_sincronizar[lote_idx:lote_idx + lote_size]
+            codigos_str = ','.join(map(str, lote_codigos))
+            
+            logger.info(f"   📦 Processando lote {lote_idx//lote_size + 1} de {(len(todos_codigos_para_sincronizar) + lote_size - 1)//lote_size} ({len(lote_codigos)} pedidos)...")
+            
+            cursor.execute(f"""
+                SELECT
+                    A.CODIGO,
+                    A.CODIGO_CLIENTE,
+                    A.CADASTRO_DT,
+                    A.AVIADA_DT,
+                    A.ENTREGUE_DT,
+                    A.VALORVENDA,
+                    A.OBSERVACAO
+                FROM ATENDIMENTO_A1 A
+                WHERE A.CODIGO_CLIENTE IS NOT NULL
+                AND A.CODIGO IN ({codigos_str})
+                ORDER BY A.CODIGO
+            """)
 
-        logger.info(f"✅ Encontrados {len(novos_pedidos)} pedidos novos")
+            novos_pedidos = cursor.fetchall()
 
-        # Buscar clientes em lote
-        codigos_cliente = list(set([row[1] for row in novos_pedidos]))
-        url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
-        response = requests.get(
-            url_clientes,
-            headers=headers,
-            params={
-                'select': 'id,codigo_cliente_original',
-                'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
-            },
-            timeout=30
-        )
-
-        cache_clientes = {}
-        if response.status_code == 200:
-            for cli in response.json():
-                cache_clientes[cli['codigo_cliente_original']] = cli['id']
-
-        pedidos_dados = []
-        for row in novos_pedidos:
-            codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
-
-            cliente_id = cache_clientes.get(codigo_cliente)
-            if not cliente_id:
+            if not novos_pedidos:
                 continue
 
-            status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
-            status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
+            # Buscar clientes em lote
+            codigos_cliente = list(set([row[1] for row in novos_pedidos]))
+            url_clientes = f"{SUPABASE_URL}/rest/v1/prime_clientes"
+            response = requests.get(
+                url_clientes,
+                headers=headers,
+                params={
+                    'select': 'id,codigo_cliente_original',
+                    'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+                },
+                timeout=30
+            )
 
-            if entregue_dt:
-                status_geral = 'ENTREGUE'
-            elif aviada_dt:
-                status_geral = 'APROVADO'
-            else:
-                status_geral = 'PENDENTE'
+            cache_clientes = {}
+            if response.status_code == 200:
+                for cli in response.json():
+                    cache_clientes[cli['codigo_cliente_original']] = cli['id']
 
-            pedido = {
-                'codigo_orcamento_original': codigo_orcamento,
-                'codigo_cliente_original': codigo_cliente,
-                'cliente_id': cliente_id,
-                'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
-                'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
-                'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
-                'valor_total': float(valor_venda) if valor_venda else 0.0,
-                'observacoes': limpar_string(observacao),
-                'status_aprovacao': status_aprovacao,
-                'status_entrega': status_entrega,
-                'status_geral': status_geral
-            }
-            pedidos_dados.append(pedido)
+            pedidos_dados = []
+            for row in novos_pedidos:
+                codigo_orcamento, codigo_cliente, cadastro_dt, aviada_dt, entregue_dt, valor_venda, observacao = row
 
-        if not pedidos_dados:
-            return {'inseridos': 0, 'mensagem': 'Pedidos sem clientes correspondentes'}
+                cliente_id = cache_clientes.get(codigo_cliente)
+                if not cliente_id:
+                    continue
 
-        # Inserir usando upsert para evitar duplicatas
-        url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
-        headers_upsert = headers.copy()
-        headers_upsert['Prefer'] = 'resolution=merge-duplicates'  # Upsert para evitar duplicatas
-        
-        # Inserir em lotes de 500
-        total_inseridos = 0
-        for i in range(0, len(pedidos_dados), 500):
-            lote = pedidos_dados[i:i+500]
-            response = requests.post(url, headers=headers_upsert, json=lote, timeout=60)
+                status_aprovacao = 'APROVADO' if aviada_dt else 'NAO_APROVADO'
+                status_entrega = 'ENTREGUE' if entregue_dt else 'NAO_ENTREGUE'
+
+                if entregue_dt:
+                    status_geral = 'ENTREGUE'
+                elif aviada_dt:
+                    status_geral = 'APROVADO'
+                else:
+                    status_geral = 'PENDENTE'
+
+                pedido = {
+                    'codigo_orcamento_original': codigo_orcamento,
+                    'codigo_cliente_original': codigo_cliente,
+                    'cliente_id': cliente_id,
+                    'data_criacao': cadastro_dt.isoformat() if cadastro_dt else None,
+                    'data_aprovacao': aviada_dt.isoformat() if aviada_dt else None,
+                    'data_entrega': entregue_dt.isoformat() if entregue_dt else None,
+                    'valor_total': float(valor_venda) if valor_venda else 0.0,
+                    'observacoes': limpar_string(observacao),
+                    'status_aprovacao': status_aprovacao,
+                    'status_entrega': status_entrega,
+                    'status_geral': status_geral
+                }
+                pedidos_dados.append(pedido)
+
+            if not pedidos_dados:
+                continue
+
+            # Inserir usando upsert para evitar duplicatas
+            url = f"{SUPABASE_URL}/rest/v1/prime_pedidos"
+            headers_upsert = headers.copy()
+            headers_upsert['Prefer'] = 'resolution=merge-duplicates'  # Upsert para evitar duplicatas
             
-            if response.status_code in [200, 201]:
-                total_inseridos += len(lote)
-                logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} pedidos sincronizados")
-            else:
-                logger.error(f"   ❌ Erro ao inserir lote {i//500 + 1}: {response.status_code}")
+            # Inserir em lotes de 500
+            for i in range(0, len(pedidos_dados), 500):
+                lote = pedidos_dados[i:i+500]
+                response = requests.post(url, headers=headers_upsert, json=lote, timeout=60)
+                
+                if response.status_code in [200, 201]:
+                    total_inseridos += len(lote)
+                    logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} pedidos sincronizados")
+                else:
+                    logger.error(f"   ❌ Erro ao inserir lote {i//500 + 1}: {response.status_code}")
+        
+        conn.close()
 
         if total_inseridos > 0:
+            logger.info(f"✅ {total_inseridos:,} pedidos sincronizados")
+            if gaps:
+                logger.info(f"   ✅ TODOS os {len(gaps):,} gaps foram preenchidos!")
             return {
                 'inseridos': total_inseridos,
-                'mensagem': f'{total_inseridos} pedidos sincronizados'
+                'gaps_preenchidos': len(gaps) if gaps else 0,
+                'novos_registros': len(novos_codigos) if novos_codigos else 0,
+                'mensagem': f'{total_inseridos:,} pedidos sincronizados (gaps: {len(gaps) if gaps else 0}, novos: {len(novos_codigos) if novos_codigos else 0})'
             }
         else:
             return {'inseridos': 0, 'erro': 'Nenhum pedido inserido'}
