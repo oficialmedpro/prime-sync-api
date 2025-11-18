@@ -1246,7 +1246,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.0'
+        'version': '2.2.1'
     })
 
 def sync_missing_pedidos():
@@ -1433,7 +1433,7 @@ def sync_missing():
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.0 - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.1 - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -1516,7 +1516,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.0',
+            'version': '2.2.1',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
