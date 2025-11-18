@@ -822,21 +822,52 @@ def sync_formulas_itens_novos():
         if not itens_dados:
             return {'inseridos': 0, 'mensagem': 'Itens sem fórmulas correspondentes'}
 
-        # Headers com ignore-duplicates (corrigido 28/10/2025)
+        # Headers com ignore-duplicates (corrigido para inserir em lotes)
         headers_insert = headers.copy()
         headers_insert['Prefer'] = 'resolution=ignore-duplicates'
         
+        # Inserir em lotes de 500 para evitar timeout e HTTP 409
         url = f"{SUPABASE_URL}/rest/v1/prime_formulas_itens"
-        response = requests.post(url, headers=headers_insert, json=itens_dados, timeout=60)
+        total_inseridos = 0
+        total_erros = 0
+        
+        for i in range(0, len(itens_dados), 500):
+            lote = itens_dados[i:i+500]
+            try:
+                response = requests.post(url, headers=headers_insert, json=lote, timeout=60)
+                
+                if response.status_code in [200, 201]:
+                    total_inseridos += len(lote)
+                    logger.info(f"   ✅ Lote {i//500 + 1}: {len(lote)} itens sincronizados")
+                elif response.status_code == 409:
+                    # HTTP 409 = conflito (duplicatas) - tentar inserir item por item ou pular
+                    logger.warning(f"   ⚠️ Lote {i//500 + 1}: HTTP 409 (duplicatas) - tentando inserir individualmente...")
+                    # Tentar inserir item por item para identificar quais já existem
+                    inseridos_lote = 0
+                    for item in lote:
+                        try:
+                            resp_item = requests.post(url, headers=headers_insert, json=[item], timeout=30)
+                            if resp_item.status_code in [200, 201]:
+                                inseridos_lote += 1
+                        except:
+                            pass
+                    total_inseridos += inseridos_lote
+                    if inseridos_lote < len(lote):
+                        logger.info(f"   ⚠️ Lote {i//500 + 1}: {inseridos_lote}/{len(lote)} itens inseridos (alguns já existiam)")
+                else:
+                    total_erros += len(lote)
+                    logger.error(f"   ❌ Erro ao inserir lote {i//500 + 1}: {response.status_code} - {response.text[:200]}")
+            except Exception as e:
+                total_erros += len(lote)
+                logger.error(f"   ❌ Exceção ao inserir lote {i//500 + 1}: {e}")
 
-        if response.status_code in [200, 201]:
+        if total_inseridos > 0:
             return {
-                'inseridos': len(itens_dados),
-                'mensagem': f'{len(itens_dados)} itens sincronizados'
+                'inseridos': total_inseridos,
+                'mensagem': f'{total_inseridos} itens sincronizados'
             }
         else:
-            logger.error(f"❌ Erro ao inserir itens: {response.status_code}")
-            return {'inseridos': 0, 'erro': f'HTTP {response.status_code}'}
+            return {'inseridos': 0, 'erro': f'HTTP 409 ou erro na inserção (tentados {len(itens_dados)} itens)'}
 
     except Exception as e:
         logger.error(f"❌ Erro em sync_formulas_itens_novos: {e}")
@@ -1140,7 +1171,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.1.0'
+        'version': '2.1.1'
     })
 
 def sync_missing_pedidos():
@@ -1410,7 +1441,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.1.0',
+            'version': '2.1.1',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
