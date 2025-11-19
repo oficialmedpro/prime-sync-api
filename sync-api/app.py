@@ -759,7 +759,11 @@ def sync_formulas_novas():
         return {'inseridos': 0, 'erro': str(e)}
 
 def sync_formulas_itens_novos():
-    """Sincroniza itens das fórmulas (ATENDIMENTO_A3) COM GAP FILLING - V2.2.3"""
+    """Sincroniza itens das fórmulas (ATENDIMENTO_A3) COM GAP FILLING COMPLETO - V2.2.4
+    
+    CORREÇÃO CRÍTICA: Agora busca TODOS os itens do Firebird (não apenas os de fórmulas existentes)
+    e cria fórmulas automaticamente se não existirem no Supabase.
+    """
     try:
         logger.info("📋 Sincronizando itens de fórmulas (com gap filling)...")
         
@@ -828,17 +832,27 @@ def sync_formulas_itens_novos():
         
         logger.info(f"   📊 {len(cache_formulas):,} fórmulas no Supabase")
         
-        if not cache_formulas:
-            conn.close()
-            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula no Supabase'}
-        
-        # Buscar TODOS os itens do Firebird que correspondem a fórmulas no Supabase (em lotes)
-        codigos_atend = list(set([chave[0] for chave in cache_formulas.keys()]))
+        # Buscar TODOS os itens do Firebird (não apenas os de fórmulas existentes no Supabase)
+        # Isso garante que gaps de itens sejam identificados mesmo se a fórmula ainda não existir
+        logger.info("   📊 Buscando TODOS os itens do Firebird...")
         todos_itens_firebird = []
-        lote_size = 1000
         
-        for i in range(0, len(codigos_atend), lote_size):
-            lote_codigos = codigos_atend[i:i+lote_size]
+        # Buscar em lotes para evitar timeout
+        max_codigo_atend = max([chave[0] for chave in cache_formulas.keys()]) if cache_formulas else 0
+        
+        # Buscar itens em lotes de 5000 códigos de atendimento
+        cursor.execute("""
+            SELECT DISTINCT CODIGO_ATEND_A1
+            FROM ATENDIMENTO_A3
+            WHERE CODIGO_ATEND_A1 IS NOT NULL
+            ORDER BY CODIGO_ATEND_A1
+        """)
+        todos_codigos_atend = [row[0] for row in cursor.fetchall()]
+        logger.info(f"   📊 {len(todos_codigos_atend):,} códigos de atendimento com itens no Firebird")
+        
+        lote_size = 1000
+        for i in range(0, len(todos_codigos_atend), lote_size):
+            lote_codigos = todos_codigos_atend[i:i+lote_size]
             codigos_str = ','.join(map(str, lote_codigos))
             
             cursor.execute(f"""
@@ -861,8 +875,12 @@ def sync_formulas_itens_novos():
             """)
             
             todos_itens_firebird.extend(cursor.fetchall())
+            
+            if (i // lote_size + 1) % 10 == 0:
+                logger.info(f"   📊 Processados {min(i + lote_size, len(todos_codigos_atend)):,}/{len(todos_codigos_atend):,} códigos de atendimento...")
         
         conn.close()
+        logger.info(f"   ✅ {len(todos_itens_firebird):,} itens carregados do Firebird")
         
         # Identificar gaps
         chaves_firebird = set()
@@ -921,6 +939,8 @@ def sync_formulas_itens_novos():
 
         # 3. Preparar dados para inserção
         itens_dados = []
+        itens_sem_formula = []
+        
         for row in todos_itens_para_sincronizar:
             (codigo_atend, num_formula, num_linha, codigo_produto, nome_produto,
              quantidade, unidade, valor_custo, valor_venda, observacao) = row
@@ -928,7 +948,99 @@ def sync_formulas_itens_novos():
             chave = (codigo_atend, num_formula)
             formula_info = cache_formulas.get(chave)
 
+            # Se fórmula não existe no cache, tentar buscar no Supabase novamente
             if not formula_info:
+                try:
+                    response = requests.get(
+                        f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                        headers=headers,
+                        params={
+                            'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                            'codigo_orcamento_original': f'eq.{codigo_atend}',
+                            'numero_formula': f'eq.{num_formula}'
+                        },
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        dados = response.json()
+                        if dados:
+                            formula_info = {
+                                'id': dados[0]['id'],
+                                'pedido_id': dados[0]['pedido_id']
+                            }
+                            # Adicionar ao cache para próximas iterações
+                            cache_formulas[chave] = formula_info
+                except:
+                    pass
+
+            # Se ainda não encontrou, tentar criar a fórmula buscando dados do Firebird
+            if not formula_info:
+                try:
+                    # Buscar dados da fórmula no Firebird
+                    conn = conectar_firebird()
+                    cursor = conn.cursor()
+                    cursor.execute(f"""
+                        SELECT
+                            A2.CODIGO_ATEND_A1,
+                            A2.NUMEROFORMULA,
+                            A2.TEXTOROTULO,
+                            A2.POSOLOGIA,
+                            A2.VALORFORMULA_VENDA
+                        FROM ATENDIMENTO_A2 A2
+                        WHERE A2.CODIGO_ATEND_A1 = {codigo_atend}
+                        AND A2.NUMEROFORMULA = {num_formula}
+                    """)
+                    formula_fb = cursor.fetchone()
+                    conn.close()
+                    
+                    if formula_fb:
+                        # Buscar pedido no Supabase
+                        response = requests.get(
+                            f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                            headers=headers,
+                            params={
+                                'select': 'id',
+                                'codigo_orcamento_original': f'eq.{codigo_atend}'
+                            },
+                            timeout=10
+                        )
+                        
+                        if response.status_code == 200:
+                            pedidos = response.json()
+                            if pedidos:
+                                pedido_id = pedidos[0]['id']
+                                # Criar fórmula no Supabase
+                                formula_data = {
+                                    'pedido_id': pedido_id,
+                                    'codigo_orcamento_original': codigo_atend,
+                                    'numero_formula': num_formula,
+                                    'descricao': limpar_string(formula_fb[2]) if len(formula_fb) > 2 else '',
+                                    'posologia': limpar_string(formula_fb[3]) if len(formula_fb) > 3 else '',
+                                    'valor_formula': float(formula_fb[4]) if len(formula_fb) > 4 and formula_fb[4] else 0.0,
+                                    'updated_at': datetime.now().isoformat()
+                                }
+                                
+                                response_create = requests.post(
+                                    f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                                    headers={**headers, 'Prefer': 'resolution=ignore-duplicates'},
+                                    json=[formula_data],
+                                    timeout=30
+                                )
+                                
+                                if response_create.status_code in [200, 201]:
+                                    created = response_create.json()
+                                    if created and len(created) > 0:
+                                        formula_info = {
+                                            'id': created[0]['id'],
+                                            'pedido_id': pedido_id
+                                        }
+                                        cache_formulas[chave] = formula_info
+                                        logger.info(f"   ✅ Fórmula criada automaticamente: {codigo_atend}/{num_formula}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Não foi possível criar fórmula {codigo_atend}/{num_formula}: {e}")
+
+            if not formula_info:
+                itens_sem_formula.append((codigo_atend, num_formula))
                 continue
 
             item = {
@@ -952,8 +1064,11 @@ def sync_formulas_itens_novos():
             }
             itens_dados.append(item)
 
+        if itens_sem_formula:
+            logger.warning(f"   ⚠️ {len(itens_sem_formula)} itens sem fórmulas correspondentes (sem pedidos válidos)")
+
         if not itens_dados:
-            return {'inseridos': 0, 'mensagem': 'Itens sem fórmulas correspondentes'}
+            return {'inseridos': 0, 'mensagem': f'Itens sem fórmulas correspondentes ({len(itens_sem_formula)} itens pulados)'}
 
         # Headers com ignore-duplicates (corrigido para inserir em lotes)
         headers_insert = headers.copy()
@@ -1304,7 +1419,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.3'
+        'version': '2.2.4'
     })
 
 def sync_missing_pedidos():
@@ -1491,7 +1606,7 @@ def sync_missing():
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.3 - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.4 - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -1574,7 +1689,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.3',
+            'version': '2.2.4',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
