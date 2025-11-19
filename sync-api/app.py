@@ -1449,7 +1449,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.5'
+        'version': '2.2.6'
     })
 
 def sync_missing_pedidos():
@@ -1633,10 +1633,324 @@ def sync_missing():
             'timestamp': datetime.now().isoformat()
         }), 500
 
+def atualizar_fk_automaticamente():
+    """Preenche automaticamente campos FK que estão NULL (executado após cada etapa de sincronização)"""
+    try:
+        logger.info("\n" + "="*70)
+        logger.info("🔗 ATUALIZANDO FOREIGN KEYS AUTOMATICAMENTE...")
+        logger.info("="*70)
+        
+        total_atualizados = 0
+        
+        # 1. Atualizar pedidos.cliente_id (após sincronizar clientes)
+        logger.info("   1️⃣ Atualizando pedidos.cliente_id...")
+        url = f"{SUPABASE_URL}/rest/v1/rpc/atualizar_pedidos_cliente_id"
+        response = requests.post(url, headers=headers, json={}, timeout=30)
+        if response.status_code == 200:
+            count = response.json() if isinstance(response.json(), int) else 0
+            total_atualizados += count
+            logger.info(f"      ✅ {count} pedidos atualizados")
+        else:
+            # Se não existe a função RPC, fazer via UPDATE direto em lotes
+            offset = 0
+            limit = 1000
+            count = 0
+            while True:
+                # Buscar pedidos sem cliente_id
+                response = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_cliente_original',
+                        'cliente_id': 'is.null',
+                        'limit': limit,
+                        'offset': offset
+                    },
+                    timeout=30
+                )
+                if response.status_code != 200:
+                    break
+                pedidos = response.json()
+                if not pedidos:
+                    break
+                
+                # Buscar clientes correspondentes
+                codigos_cliente = [p['codigo_cliente_original'] for p in pedidos]
+                response_clientes = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prime_clientes",
+                    headers=headers,
+                    params={
+                        'select': 'id,codigo_cliente_original',
+                        'codigo_cliente_original': f'in.({",".join(map(str, codigos_cliente))})'
+                    },
+                    timeout=30
+                )
+                
+                if response_clientes.status_code == 200:
+                    clientes = {c['codigo_cliente_original']: c['id'] for c in response_clientes.json()}
+                    
+                    # Atualizar pedidos em lote
+                    for pedido in pedidos:
+                        cliente_id = clientes.get(pedido['codigo_cliente_original'])
+                        if cliente_id:
+                            response_update = requests.patch(
+                                f"{SUPABASE_URL}/rest/v1/prime_pedidos?id=eq.{pedido['id']}",
+                                headers=headers,
+                                json={'cliente_id': cliente_id},
+                                timeout=10
+                            )
+                            if response_update.status_code in [200, 204]:
+                                count += 1
+                
+                offset += limit
+                if len(pedidos) < limit:
+                    break
+            
+            total_atualizados += count
+            if count > 0:
+                logger.info(f"      ✅ {count} pedidos atualizados")
+        
+        # 2. Atualizar formulas.pedido_id (após sincronizar pedidos)
+        logger.info("   2️⃣ Atualizando formulas.pedido_id...")
+        offset = 0
+        count = 0
+        while True:
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'pedido_id': 'is.null',
+                    'limit': 1000,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            if response.status_code != 200:
+                break
+            formulas = response.json()
+            if not formulas:
+                break
+            
+            codigos_pedido = [f['codigo_orcamento_original'] for f in formulas]
+            response_pedidos = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, codigos_pedido))})'
+                },
+                timeout=30
+            )
+            
+            if response_pedidos.status_code == 200:
+                pedidos_dict = {p['codigo_orcamento_original']: p['id'] for p in response_pedidos.json()}
+                for formula in formulas:
+                    pedido_id = pedidos_dict.get(formula['codigo_orcamento_original'])
+                    if pedido_id:
+                        response_update = requests.patch(
+                            f"{SUPABASE_URL}/rest/v1/prime_formulas?id=eq.{formula['id']}",
+                            headers=headers,
+                            json={'pedido_id': pedido_id},
+                            timeout=10
+                        )
+                        if response_update.status_code in [200, 204]:
+                            count += 1
+            
+            offset += 1000
+            if len(formulas) < 1000:
+                break
+        
+        total_atualizados += count
+        if count > 0:
+            logger.info(f"      ✅ {count} fórmulas atualizadas")
+        
+        # 3. Atualizar formulas_itens.formula_id e pedido_id (após sincronizar formulas)
+        logger.info("   3️⃣ Atualizando formulas_itens.formula_id e pedido_id...")
+        offset = 0
+        count = 0
+        while True:
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_formulas_itens",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_atendimento_original,numero_formula',
+                    'or': '(formula_id.is.null,pedido_id.is.null)',
+                    'limit': 1000,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            if response.status_code != 200:
+                break
+            itens = response.json()
+            if not itens:
+                break
+            
+            # Buscar fórmulas e pedidos
+            chaves_formula = [(item['codigo_atendimento_original'], item['numero_formula']) for item in itens]
+            codigos_pedido = list(set([item['codigo_atendimento_original'] for item in itens]))
+            
+            # Cache de fórmulas
+            cache_formulas = {}
+            for chave in chaves_formula:
+                response_formula = requests.get(
+                    f"{SUPABASE_URL}/rest/v1/prime_formulas",
+                    headers=headers,
+                    params={
+                        'select': 'id,pedido_id,codigo_orcamento_original,numero_formula',
+                        'codigo_orcamento_original': f'eq.{chave[0]}',
+                        'numero_formula': f'eq.{chave[1]}'
+                    },
+                    timeout=10
+                )
+                if response_formula.status_code == 200:
+                    formulas_list = response_formula.json()
+                    if formulas_list:
+                        cache_formulas[chave] = formulas_list[0]
+            
+            # Cache de pedidos
+            response_pedidos = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, codigos_pedido))})'
+                },
+                timeout=30
+            )
+            cache_pedidos = {}
+            if response_pedidos.status_code == 200:
+                cache_pedidos = {p['codigo_orcamento_original']: p['id'] for p in response_pedidos.json()}
+            
+            # Atualizar itens
+            for item in itens:
+                chave = (item['codigo_atendimento_original'], item['numero_formula'])
+                formula_info = cache_formulas.get(chave)
+                pedido_id = cache_pedidos.get(item['codigo_atendimento_original'])
+                
+                update_data = {}
+                if not item.get('formula_id') and formula_info:
+                    update_data['formula_id'] = formula_info['id']
+                if not item.get('pedido_id') and pedido_id:
+                    update_data['pedido_id'] = pedido_id
+                
+                if update_data:
+                    response_update = requests.patch(
+                        f"{SUPABASE_URL}/rest/v1/prime_formulas_itens?id=eq.{item['id']}",
+                        headers=headers,
+                        json=update_data,
+                        timeout=10
+                    )
+                    if response_update.status_code in [200, 204]:
+                        count += 1
+            
+            offset += 1000
+            if len(itens) < 1000:
+                break
+        
+        total_atualizados += count
+        if count > 0:
+            logger.info(f"      ✅ {count} itens atualizados")
+        
+        # 4. Atualizar rastreabilidade.pedido_id e tipo_processo_id (após sincronizar tudo)
+        logger.info("   4️⃣ Atualizando rastreabilidade.pedido_id e tipo_processo_id...")
+        offset = 0
+        count = 0
+        while True:
+            response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original,codigo_tipo_original',
+                    'or': '(pedido_id.is.null,tipo_processo_id.is.null)',
+                    'limit': 1000,
+                    'offset': offset
+                },
+                timeout=30
+            )
+            if response.status_code != 200:
+                break
+            rastreabilidade = response.json()
+            if not rastreabilidade:
+                break
+            
+            codigos_pedido = list(set([r['codigo_orcamento_original'] for r in rastreabilidade]))
+            codigos_tipo = list(set([r['codigo_tipo_original'] for r in rastreabilidade]))
+            
+            # Cache de pedidos
+            response_pedidos = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_orcamento_original',
+                    'codigo_orcamento_original': f'in.({",".join(map(str, codigos_pedido))})'
+                },
+                timeout=30
+            )
+            cache_pedidos = {}
+            if response_pedidos.status_code == 200:
+                cache_pedidos = {p['codigo_orcamento_original']: p['id'] for p in response_pedidos.json()}
+            
+            # Cache de tipos
+            response_tipos = requests.get(
+                f"{SUPABASE_URL}/rest/v1/prime_tipos_processo",
+                headers=headers,
+                params={
+                    'select': 'id,codigo_tipo_original',
+                    'codigo_tipo_original': f'in.({",".join(map(str, codigos_tipo))})'
+                },
+                timeout=30
+            )
+            cache_tipos = {}
+            if response_tipos.status_code == 200:
+                cache_tipos = {t['codigo_tipo_original']: t['id'] for t in response_tipos.json()}
+            
+            # Atualizar rastreabilidade
+            for rastro in rastreabilidade:
+                update_data = {}
+                if not rastro.get('pedido_id'):
+                    pedido_id = cache_pedidos.get(rastro['codigo_orcamento_original'])
+                    if pedido_id:
+                        update_data['pedido_id'] = pedido_id
+                if not rastro.get('tipo_processo_id'):
+                    tipo_id = cache_tipos.get(rastro['codigo_tipo_original'])
+                    if tipo_id:
+                        update_data['tipo_processo_id'] = tipo_id
+                
+                if update_data:
+                    response_update = requests.patch(
+                        f"{SUPABASE_URL}/rest/v1/prime_rastreabilidade?id=eq.{rastro['id']}",
+                        headers=headers,
+                        json=update_data,
+                        timeout=10
+                    )
+                    if response_update.status_code in [200, 204]:
+                        count += 1
+            
+            offset += 1000
+            if len(rastreabilidade) < 1000:
+                break
+        
+        total_atualizados += count
+        if count > 0:
+            logger.info(f"      ✅ {count} registros de rastreabilidade atualizados")
+        
+        if total_atualizados > 0:
+            logger.info(f"\n   ✅ Total de FK atualizadas: {total_atualizados}")
+        else:
+            logger.info(f"\n   ℹ️ Nenhuma FK precisou ser atualizada (todas já preenchidas)")
+        
+        return total_atualizados
+    
+    except Exception as e:
+        logger.warning(f"   ⚠️ Erro ao atualizar FK automaticamente: {e}")
+        return 0
+
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.5 - FK OPCIONAL - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.6 - FK AUTOMÁTICO - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -1671,6 +1985,9 @@ def sync_completo_com_gaps():
         total_inseridos += result_clientes.get('inseridos', 0)
         logger.info(f"✅ Clientes: {result_clientes}")
         
+        # Atualizar FK após sincronizar clientes
+        atualizar_fk_automaticamente()
+        
         # 3. PEDIDOS (depende de CLIENTES - depois de clientes)
         logger.info("\n" + "="*70)
         logger.info("3️⃣ SINCRONIZANDO PEDIDOS (depende de CLIENTES)")
@@ -1680,6 +1997,9 @@ def sync_completo_com_gaps():
         total_inseridos += result_pedidos.get('inseridos', 0)
         logger.info(f"✅ Pedidos: {result_pedidos}")
         
+        # Atualizar FK após sincronizar pedidos
+        atualizar_fk_automaticamente()
+        
         # 4. FORMULAS (depende de PEDIDOS - depois de pedidos)
         logger.info("\n" + "="*70)
         logger.info("4️⃣ SINCRONIZANDO FÓRMULAS (depende de PEDIDOS)")
@@ -1688,6 +2008,9 @@ def sync_completo_com_gaps():
         resultados['formulas'] = result_formulas
         total_inseridos += result_formulas.get('inseridos', 0)
         logger.info(f"✅ Fórmulas: {result_formulas}")
+        
+        # Atualizar FK após sincronizar fórmulas
+        atualizar_fk_automaticamente()
         
         # 5. FORMULAS_ITENS (depende de FORMULAS e PEDIDOS - depois de formulas)
         logger.info("\n" + "="*70)
@@ -1707,6 +2030,10 @@ def sync_completo_com_gaps():
         total_inseridos += result_rastreabilidade.get('inseridos', 0)
         logger.info(f"✅ Rastreabilidade: {result_rastreabilidade}")
         
+        # Atualizar FK final (após sincronizar tudo)
+        fk_atualizadas = atualizar_fk_automaticamente()
+        resultados['fk_atualizadas'] = fk_atualizadas
+        
         tempo_total = (datetime.now() - inicio).total_seconds()
         
         logger.info("\n" + "="*70)
@@ -1719,7 +2046,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.5',
+            'version': '2.2.6',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
