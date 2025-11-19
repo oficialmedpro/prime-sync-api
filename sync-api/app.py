@@ -711,15 +711,18 @@ def sync_formulas_novas():
             offset_pedidos += 500
 
         formulas_dados = []
+        formulas_sem_pedido = []
+        
         for row in formulas_faltantes:
             codigo_atend, num_formula, texto_rotulo, posologia, valor = row
 
             pedido_id = cache_pedidos.get(codigo_atend)
+            # FK agora é opcional - permite inserir mesmo sem pedido (será atualizado depois)
             if not pedido_id:
-                continue
+                formulas_sem_pedido.append((codigo_atend, num_formula))
 
             formula = {
-                'pedido_id': pedido_id,
+                'pedido_id': pedido_id,  # Pode ser NULL agora
                 'codigo_orcamento_original': codigo_atend,
                 'numero_formula': num_formula,
                 'descricao': limpar_string(texto_rotulo),
@@ -729,8 +732,11 @@ def sync_formulas_novas():
             }
             formulas_dados.append(formula)
 
+        if formulas_sem_pedido:
+            logger.info(f"   ⚠️ {len(formulas_sem_pedido)} fórmulas sem pedido (serão inseridas mesmo assim, FK será preenchida depois)")
+
         if not formulas_dados:
-            return {'inseridos': 0, 'mensagem': 'Fórmulas sem pedidos correspondentes'}
+            return {'inseridos': 0, 'mensagem': 'Nenhuma fórmula para inserir'}
 
         # Inserir em lotes de 500
         total_inseridos = 0
@@ -1039,13 +1045,31 @@ def sync_formulas_itens_novos():
                 except Exception as e:
                     logger.warning(f"   ⚠️ Não foi possível criar fórmula {codigo_atend}/{num_formula}: {e}")
 
+            # FK agora são opcionais - permite inserir mesmo sem fórmula/pedido (serão atualizados depois)
             if not formula_info:
                 itens_sem_formula.append((codigo_atend, num_formula))
-                continue
+                # Tentar buscar pedido_id diretamente se fórmula não existir
+                pedido_id_direto = None
+                try:
+                    response = requests.get(
+                        f"{SUPABASE_URL}/rest/v1/prime_pedidos",
+                        headers=headers,
+                        params={
+                            'select': 'id',
+                            'codigo_orcamento_original': f'eq.{codigo_atend}'
+                        },
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        pedidos = response.json()
+                        if pedidos:
+                            pedido_id_direto = pedidos[0]['id']
+                except:
+                    pass
 
             item = {
-                'formula_id': formula_info['id'],
-                'pedido_id': formula_info['pedido_id'],
+                'formula_id': formula_info['id'] if formula_info else None,  # Pode ser NULL agora
+                'pedido_id': formula_info['pedido_id'] if formula_info else pedido_id_direto,  # Pode ser NULL agora
                 'codigo_atendimento_original': codigo_atend,
                 'numero_formula': num_formula,
                 'numero_linha': num_linha,
@@ -1065,10 +1089,10 @@ def sync_formulas_itens_novos():
             itens_dados.append(item)
 
         if itens_sem_formula:
-            logger.warning(f"   ⚠️ {len(itens_sem_formula)} itens sem fórmulas correspondentes (sem pedidos válidos)")
+            logger.info(f"   ⚠️ {len(itens_sem_formula)} itens sem fórmulas correspondentes (serão inseridos mesmo assim, FK será preenchida depois)")
 
         if not itens_dados:
-            return {'inseridos': 0, 'mensagem': f'Itens sem fórmulas correspondentes ({len(itens_sem_formula)} itens pulados)'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum item para inserir'}
 
         # Headers com ignore-duplicates (corrigido para inserir em lotes)
         headers_insert = headers.copy()
@@ -1245,6 +1269,8 @@ def sync_rastreabilidade_nova():
 
         # Preparar dados
         rastreabilidade_dados = []
+        registros_sem_fk = []
+        
         for row in rastreabilidade_faltantes:
             codigo_orcamento = row[2]
             codigo_tipo = row[3]
@@ -1252,14 +1278,15 @@ def sync_rastreabilidade_nova():
             pedido_id = cache_pedidos.get(codigo_orcamento)
             tipo_processo_id = cache_tipos.get(codigo_tipo)
 
+            # FK agora são opcionais - permite inserir mesmo sem pedido/tipo (serão atualizados depois)
             if not pedido_id or not tipo_processo_id:
-                continue
+                registros_sem_fk.append((codigo_orcamento, codigo_tipo))
 
             rastro = {
                 'codigo_processo_original': row[0],
-                'pedido_id': pedido_id,
+                'pedido_id': pedido_id,  # Pode ser NULL agora
                 'codigo_orcamento_original': codigo_orcamento,
-                'tipo_processo_id': tipo_processo_id,
+                'tipo_processo_id': tipo_processo_id,  # Pode ser NULL agora
                 'codigo_tipo_original': codigo_tipo,
                 'tipo_movimento': row[1],
                 'codigo_funcionario': row[4],
@@ -1271,8 +1298,11 @@ def sync_rastreabilidade_nova():
             }
             rastreabilidade_dados.append(rastro)
 
+        if registros_sem_fk:
+            logger.info(f"   ⚠️ {len(registros_sem_fk)} registros sem FK (serão inseridos mesmo assim, FK será preenchida depois)")
+
         if not rastreabilidade_dados:
-            return {'inseridos': 0, 'mensagem': 'Nenhum registro válido (sem pedidos/tipos correspondentes)'}
+            return {'inseridos': 0, 'mensagem': 'Nenhum registro para inserir'}
 
         # Inserir em lotes de 500
         total_inseridos = 0
@@ -1419,7 +1449,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.4'
+        'version': '2.2.5'
     })
 
 def sync_missing_pedidos():
@@ -1606,7 +1636,7 @@ def sync_missing():
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.4 - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.5 - FK OPCIONAL - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -1689,7 +1719,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.4',
+            'version': '2.2.5',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
