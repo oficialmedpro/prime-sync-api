@@ -104,13 +104,38 @@ def get_ultimo_id_supabase(tabela, campo_id='codigo_cliente_original'):
         return 0
 
 def buscar_todos_codigos_supabase(tabela, campo_id='codigo_cliente_original', filtro_especial=None):
-    """Busca TODOS os códigos do Supabase usando paginação completa (corrigido para evitar gaps)"""
+    """Busca TODOS os códigos do Supabase usando paginação completa COM Content-Range para garantir 100%"""
     codigos = set()
     offset = 0
     limit = 1000
     
     try:
         url = f"{SUPABASE_URL}/rest/v1/{tabela}"
+        
+        # PRIMEIRO: Buscar total usando Content-Range
+        params_count = {'select': campo_id, 'limit': 0}
+        if filtro_especial:
+            params_count[campo_id] = filtro_especial
+        
+        response_count = requests.get(
+            url, 
+            headers={**headers, 'Prefer': 'count=exact'}, 
+            params=params_count, 
+            timeout=30
+        )
+        
+        total_esperado = None
+        if response_count.status_code in [200, 206]:
+            count_header = response_count.headers.get('Content-Range', '0')
+            if '/' in count_header:
+                total_str = count_header.split('/')[-1]
+                if total_str.isdigit():
+                    total_esperado = int(total_str)
+                    logger.info(f"   📊 Total esperado em {tabela}: {total_esperado:,} registros")
+        
+        # BUSCAR TODOS usando paginação com retry
+        tentativas_erro = 0
+        max_tentativas = 3
         
         while True:
             params = {
@@ -120,41 +145,78 @@ def buscar_todos_codigos_supabase(tabela, campo_id='codigo_cliente_original', fi
                 'offset': offset
             }
             
-            # Para clientes, ignorar códigos especiais (> 500000)
             if filtro_especial:
                 params[campo_id] = filtro_especial
             
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            
-            if response.status_code == 200:
-                dados = response.json()
-                if not dados:
-                    break
+            try:
+                response = requests.get(url, headers=headers, params=params, timeout=60)
                 
-                codigos.update([d[campo_id] for d in dados])
+                if response.status_code in [200, 206]:
+                    dados = response.json()
+                    if not dados:
+                        break
+                    
+                    codigos.update([d[campo_id] for d in dados if d.get(campo_id) is not None])
+                    tentativas_erro = 0  # Reset contador de erros
+                    
+                    # Verificar se terminou
+                    if len(dados) < limit:
+                        break
+                    
+                    offset += limit
+                    
+                    # Log progresso a cada 10k registros
+                    if len(codigos) % 10000 == 0:
+                        logger.info(f"      📊 Carregados {len(codigos):,}/{total_esperado if total_esperado else '?'} códigos...")
+                        
+                elif response.status_code == 429:  # Rate limit
+                    logger.warning(f"   ⚠️ Rate limit atingido. Aguardando 5s...")
+                    import time
+                    time.sleep(5)
+                    continue  # Tentar novamente sem incrementar offset
+                    
+                else:
+                    tentativas_erro += 1
+                    if tentativas_erro >= max_tentativas:
+                        logger.error(f"   ❌ Erro ao buscar códigos após {max_tentativas} tentativas: {response.status_code}")
+                        break
+                    logger.warning(f"   ⚠️ Erro {response.status_code} ao buscar códigos (tentativa {tentativas_erro}/{max_tentativas}). Aguardando...")
+                    import time
+                    time.sleep(2)
+                    continue
+                    
+            except requests.exceptions.Timeout:
+                tentativas_erro += 1
+                if tentativas_erro >= max_tentativas:
+                    logger.error(f"   ❌ Timeout ao buscar códigos após {max_tentativas} tentativas")
+                    break
+                logger.warning(f"   ⚠️ Timeout ao buscar códigos (tentativa {tentativas_erro}/{max_tentativas}). Aguardando...")
+                import time
+                time.sleep(3)
+                continue
                 
-                if len(dados) < limit:
+            except Exception as e:
+                tentativas_erro += 1
+                if tentativas_erro >= max_tentativas:
+                    logger.error(f"   ❌ Exceção ao buscar códigos após {max_tentativas} tentativas: {e}")
                     break
-                
-                offset += limit
-            elif response.status_code == 206:  # Partial Content
-                # Continuar mesmo com 206
-                dados = response.json()
-                if not dados:
-                    break
-                codigos.update([d[campo_id] for d in dados])
-                if len(dados) < limit:
-                    break
-                offset += limit
-            else:
-                logger.warning(f"Erro ao buscar códigos: {response.status_code}")
-                break
+                logger.warning(f"   ⚠️ Exceção ao buscar códigos (tentativa {tentativas_erro}/{max_tentativas}): {e}")
+                import time
+                time.sleep(2)
+                continue
         
-        logger.info(f"   ✅ Carregados {len(codigos):,} códigos de {tabela}")
+        # Validar se carregou tudo
+        if total_esperado and len(codigos) < total_esperado:
+            logger.warning(f"   ⚠️ ATENÇÃO: Carregados {len(codigos):,} de {total_esperado:,} códigos esperados (diferença: {total_esperado - len(codigos):,})")
+        else:
+            logger.info(f"   ✅ Carregados {len(codigos):,} códigos de {tabela}" + (f" (100% - esperado: {total_esperado:,})" if total_esperado else ""))
+        
         return codigos
     
     except Exception as e:
         logger.error(f"Erro ao buscar todos códigos de {tabela}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return codigos
 
 def conectar_firebird():
@@ -1449,7 +1511,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.2.6'
+        'version': '2.2.7'
     })
 
 def sync_missing_pedidos():
@@ -1950,7 +2012,7 @@ def atualizar_fk_automaticamente():
 def sync_completo_com_gaps():
     """Sincronização completa que verifica gaps e preenche, respeitando ordem de dependências"""
     logger.info("="*70)
-    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.6 - FK AUTOMÁTICO - PROCESSAMENTO 100%")
+    logger.info("🚀 SINCRONIZAÇÃO COMPLETA COM GAP FILLING V2.2.7 - BUSCA COMPLETA COM CONTENT-RANGE - PROCESSAMENTO 100%")
     logger.info("="*70)
     
     inicio = datetime.now()
@@ -2046,7 +2108,7 @@ def sync_completo_com_gaps():
             'sucesso': True,
             'timestamp': datetime.now().isoformat(),
             'tempo_execucao_segundos': tempo_total,
-            'version': '2.2.6',
+            'version': '2.2.7',
             'resultados': resultados,
             'total_inseridos': total_inseridos
         }
